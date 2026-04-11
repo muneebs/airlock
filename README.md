@@ -226,6 +226,16 @@ A clean baseline is saved at setup time. `airlock reset` restores the VM to that
 <project>/airlock.toml             Optional per-project config
 ```
 
+### See also
+
+**[bun-security-scanner](https://github.com/muneebs/bun-security-scanner)** — a Bun security scanner that checks dependencies against [Google's OSV database](https://osv.dev) before they get installed. Runs transparently on every `bun install` via `bunfig.toml`. Complements airlock's VM-level isolation with package-level vulnerability scanning at install time.
+
+```toml
+# bunfig.toml
+[install.security]
+scanner = "@nebzdev/bun-security-scanner"
+```
+
 ### Limitations
 
 - macOS only (Lima with vz requires Apple's Virtualization.framework)
