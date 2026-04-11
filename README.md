@@ -120,12 +120,17 @@ node_version = 22
 ports = "3000:3000"
 command = "pnpm dev"
 
+[services]
+compose = "./docker-compose.yml"   # started automatically before dev command
+
 [[mounts]]
 path = "./api"
 
 [[mounts]]
 path = "./shared"
 ```
+
+When `[services] compose` is set, `airlock dev` runs `docker compose up -d` inside the VM before starting your app. Services are reachable from your app code at `localhost:<port>` as normal. To also reach a service from your host (e.g. a DB client), include its port in `[dev] ports`.
 
 CLI arguments override config values, which override built-in defaults:
 
@@ -197,6 +202,7 @@ airlock version                                  Print version
 
 - Node.js 22 LTS (configurable via `airlock.toml`)
 - pnpm, bun
+- Docker CE (with `docker compose` v2)
 - Claude Code
 - git, curl, jq, iptables
 

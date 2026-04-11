@@ -170,6 +170,7 @@ load_project_config() {
     CONFIG_NODE_VERSION="$(yq -p toml '.vm.node_version // ""' "$config")"
     CONFIG_PORTS="$(yq -p toml '.dev.ports // ""' "$config")"
     CONFIG_COMMAND="$(yq -p toml '.dev.command // ""' "$config")"
+    CONFIG_SERVICES_COMPOSE="$(yq -p toml '.services.compose // ""' "$config")"
 
     # Read [[mounts]] array — each entry has a .path key
     CONFIG_MOUNTS=()
@@ -313,6 +314,10 @@ provision_vm() {
     run_in_vm sudo -u airlock npm config set prefix /home/airlock/.npm-global
     run_in_vm sudo bash -c 'echo "export PATH=/home/airlock/.local/bin:/home/airlock/.npm-global/bin:\$PATH" >> /home/airlock/.bashrc'
 
+    blue "Installing Docker..."
+    run_in_vm sudo bash -c 'curl -fsSL https://get.docker.com | bash' || dim "  Docker install failed (non-fatal)"
+    run_in_vm sudo usermod -aG docker "$AIRLOCK_USER" || true
+
     blue "Installing Claude Code..."
     run_in_vm sudo -u "$AIRLOCK_USER" bash --login -c 'curl -fsSL https://claude.ai/install.sh | bash' || dim "  Claude Code install failed (non-fatal)"
 
@@ -393,6 +398,22 @@ copy_project() {
 
     run_in_vm sudo mv "$staging" "$dest"
     run_in_vm sudo chown -R "$AIRLOCK_USER:$AIRLOCK_USER" "$dest"
+}
+
+# Start Docker services defined in airlock.toml [services] compose
+start_services() {
+    local vm_path="$1"
+    [ -n "${CONFIG_SERVICES_COMPOSE:-}" ] || return 0
+
+    run_in_vm sudo -u "$AIRLOCK_USER" bash --login -c 'which docker' >/dev/null 2>&1 \
+        || die "Docker not found in airlock. Run 'airlock destroy && airlock setup' to rebuild."
+
+    local compose_rel="${CONFIG_SERVICES_COMPOSE#./}"
+    local compose_vm_path="$vm_path/$compose_rel"
+
+    blue "Starting Docker services ($compose_rel)..."
+    run_as_airlock "docker compose -f $compose_vm_path up -d" \
+        || die "Docker services failed to start. Check $CONFIG_SERVICES_COMPOSE."
 }
 
 # ── Commands ────────────────────────────────────────────────────────
@@ -535,6 +556,8 @@ cmd_dev() {
     # Apply all mounts (restarts VM)
     apply_config "$port_range" "$cpu" "$memory" "$disk"
 
+    start_services "$vm_path"
+
     blue "Installing dependencies for $project_name..."
     run_as_airlock "cd $vm_path && $PM_INSTALL_FULL 2>&1"
 
@@ -610,6 +633,8 @@ cmd_claude() {
     done
 
     apply_config "$port_range" "$cpu" "$memory" "$disk"
+
+    start_services "$vm_path"
 
     # Claude Code needs ~/.claude for auth config.
     # Mount host's ~/.claude as read-only so credentials carry over
