@@ -2,7 +2,7 @@
 set -euo pipefail
 
 AIRLOCK_NAME="npm-airlock"
-AIRLOCK_VERSION="1.2.0"
+AIRLOCK_VERSION="0.0.2"
 AIRLOCK_HOME="/home/airlock"
 AIRLOCK_USER="airlock"
 AIRLOCK_PROJECTS="$AIRLOCK_HOME/projects"
@@ -248,17 +248,15 @@ provision_vm() {
     blue "Installing bun..."
     run_in_vm sudo bash -c 'export HOME=/root && curl -fsSL https://bun.sh/install | bash && cp /root/.bun/bin/bun /usr/local/bin/bun && chmod +x /usr/local/bin/bun' || dim "  Bun install failed (non-fatal)"
 
-    blue "Installing Claude Code..."
-    run_in_vm sudo bash -c 'export HOME=/root && curl -fsSL https://claude.ai/install.sh | bash' || dim "  Claude Code install failed (non-fatal)"
-    # Symlink to system path so all users can access it
-    run_in_vm sudo bash -c 'ln -sf /root/.claude/bin/claude /usr/local/bin/claude 2>/dev/null || ln -sf /root/.local/bin/claude /usr/local/bin/claude 2>/dev/null' || true
-
     blue "Creating airlock user..."
     run_in_vm sudo bash -c 'id airlock &>/dev/null || useradd -m -s /bin/bash airlock'
     run_in_vm sudo mkdir -p /home/airlock/.npm-global "$AIRLOCK_PROJECTS"
     run_in_vm sudo chown -R airlock:airlock /home/airlock
     run_in_vm sudo -u airlock npm config set prefix /home/airlock/.npm-global
-    run_in_vm sudo bash -c 'echo "export PATH=/home/airlock/.npm-global/bin:\$PATH" >> /home/airlock/.bashrc'
+    run_in_vm sudo bash -c 'echo "export PATH=/home/airlock/.local/bin:/home/airlock/.npm-global/bin:\$PATH" >> /home/airlock/.bashrc'
+
+    blue "Installing Claude Code..."
+    run_in_vm sudo -u "$AIRLOCK_USER" bash --login -c 'curl -fsSL https://claude.ai/install.sh | bash' || dim "  Claude Code install failed (non-fatal)"
 
     run_in_vm id airlock || die "Failed to create airlock user"
     green "VM provisioned."
@@ -511,7 +509,7 @@ cmd_claude() {
     ensure_vm
 
     # Verify claude is installed in the VM
-    run_in_vm which claude >/dev/null 2>&1 || die "Claude Code not found in airlock. Run 'airlock destroy && airlock setup' to rebuild."
+    run_in_vm sudo -u "$AIRLOCK_USER" bash --login -c 'which claude' >/dev/null 2>&1 || die "Claude Code not found in airlock. Run 'airlock destroy && airlock setup' to rebuild."
 
     local project_name
     project_name=$(project_name_from_path "$project_dir")
