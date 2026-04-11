@@ -13,7 +13,7 @@ Built for two problems:
 **One-liner:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/muneebsamuels/airlock/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/muneebs/airlock/main/install.sh | bash
 ```
 
 This installs `lima`, `jq`, `yq`, and the `airlock` CLI to `~/.local/bin`.
@@ -21,7 +21,7 @@ This installs `lima`, `jq`, `yq`, and the `airlock` CLI to `~/.local/bin`.
 **From source:**
 
 ```bash
-git clone https://github.com/muneebsamuels/airlock
+git clone https://github.com/muneebs/airlock
 cd airlock
 bash install.sh
 ```

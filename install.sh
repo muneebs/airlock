@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: curl -fsSL <raw-url>/install.sh | bash
 
 INSTALL_DIR="${HOME}/.local/bin"
-REPO_URL="https://raw.githubusercontent.com/muneebsamuels/airlock/main/bin/airlock"
+REPO_URL="https://raw.githubusercontent.com/muneebs/airlock/main/bin/airlock"
 
 # Colors
 RED='\033[0;31m'
