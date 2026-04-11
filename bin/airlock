@@ -1,0 +1,803 @@
+#!/bin/bash
+set -euo pipefail
+
+AIRLOCK_NAME="npm-airlock"
+AIRLOCK_VERSION="1.2.0"
+AIRLOCK_HOME="/home/airlock"
+AIRLOCK_USER="airlock"
+AIRLOCK_PROJECTS="$AIRLOCK_HOME/projects"
+STATE_DIR="$HOME/.airlock"
+MOUNTS_FILE="$STATE_DIR/mounts.json"  # tracks mounted projects
+PORT_RANGE_DEFAULT="3000:9999"
+
+# ── Colors ──────────────────────────────────────────────────────────
+red()   { echo -e "\033[0;31m$1\033[0m"; }
+green() { echo -e "\033[0;32m$1\033[0m"; }
+blue()  { echo -e "\033[0;34m$1\033[0m"; }
+dim()   { echo -e "\033[0;90m$1\033[0m"; }
+
+# ── Helpers ─────────────────────────────────────────────────────────
+die() { red "ERROR: $1" >&2; exit 1; }
+
+vm_exists() {
+    limactl list "$AIRLOCK_NAME" --format '{{.Name}}' 2>/dev/null | grep -q "$AIRLOCK_NAME"
+}
+
+vm_running() {
+    limactl list "$AIRLOCK_NAME" --format '{{.Status}}' 2>/dev/null | grep -q Running
+}
+
+ensure_vm() {
+    vm_exists || die "Airlock VM does not exist. Run 'airlock setup' first."
+    if ! vm_running; then
+        blue "Starting airlock VM..."
+        limactl start "$AIRLOCK_NAME" || die "VM failed to start."
+    fi
+}
+
+run_in_vm() {
+    limactl shell --workdir / "$AIRLOCK_NAME" -- "$@"
+}
+
+run_as_airlock() {
+    run_in_vm sudo -u "$AIRLOCK_USER" bash -c "$1"
+}
+
+lock_network() {
+    run_in_vm sudo iptables -F OUTPUT
+    run_in_vm sudo iptables -A OUTPUT -o lo -j ACCEPT
+    run_in_vm sudo iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+    run_in_vm sudo iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    run_in_vm sudo iptables -A OUTPUT -j DROP
+    green "Network locked. Only DNS resolution allowed."
+}
+
+unlock_network() {
+    run_in_vm sudo iptables -F OUTPUT
+    run_in_vm sudo iptables -P OUTPUT ACCEPT
+    green "Network unlocked."
+}
+
+# ── Mount registry ──────────────────────────────────────────────────
+# Stores an array of {name, host_path, vm_path} objects in JSON
+
+init_mounts_file() {
+    mkdir -p "$STATE_DIR"
+    [ -f "$MOUNTS_FILE" ] || echo '[]' > "$MOUNTS_FILE"
+}
+
+# Derive a unique project name from a host path
+# Uses the directory basename, appending a suffix if it collides
+project_name_from_path() {
+    local host_path="$1"
+    local base
+    base="$(basename "$host_path")"
+
+    init_mounts_file
+
+    # Check if this exact host_path is already mounted
+    local existing
+    existing=$(jq -r --arg p "$host_path" '.[] | select(.host_path == $p) | .name' "$MOUNTS_FILE")
+    if [ -n "$existing" ]; then
+        echo "$existing"
+        return
+    fi
+
+    # Check for name collision with a different path
+    local candidate="$base"
+    local counter=1
+    while jq -e --arg n "$candidate" '.[] | select(.name == $n)' "$MOUNTS_FILE" >/dev/null 2>&1; do
+        counter=$((counter + 1))
+        candidate="${base}-${counter}"
+    done
+
+    echo "$candidate"
+}
+
+# Add a project to the mount registry
+register_mount() {
+    local name="$1"
+    local host_path="$2"
+    local vm_path="$3"
+
+    init_mounts_file
+
+    # Remove existing entry for this host_path if any
+    local updated
+    updated=$(jq --arg p "$host_path" '[.[] | select(.host_path != $p)]' "$MOUNTS_FILE")
+
+    # Add new entry
+    updated=$(echo "$updated" | jq --arg n "$name" --arg hp "$host_path" --arg vp "$vm_path" \
+        '. + [{"name": $n, "host_path": $hp, "vm_path": $vp}]')
+
+    echo "$updated" > "$MOUNTS_FILE"
+}
+
+# Remove a project from the mount registry
+unregister_mount() {
+    local name="$1"
+    init_mounts_file
+    local updated
+    updated=$(jq --arg n "$name" '[.[] | select(.name != $n)]' "$MOUNTS_FILE")
+    echo "$updated" > "$MOUNTS_FILE"
+}
+
+# Get all registered mounts as lines of "name|host_path|vm_path"
+get_all_mounts() {
+    init_mounts_file
+    jq -r '.[] | "\(.name)|\(.host_path)|\(.vm_path)"' "$MOUNTS_FILE"
+}
+
+# Get the VM path for a given project name
+get_vm_path() {
+    local name="$1"
+    init_mounts_file
+    jq -r --arg n "$name" '.[] | select(.name == $n) | .vm_path' "$MOUNTS_FILE"
+}
+
+# Get the count of registered mounts
+mount_count() {
+    init_mounts_file
+    jq '. | length' "$MOUNTS_FILE"
+}
+
+# ── Lima config generation ──────────────────────────────────────────
+
+generate_config() {
+    local port_range="${1:-}"
+
+    cat << YAML
+vmType: "vz"
+os: "Linux"
+arch: "default"
+cpus: 2
+memory: "4GiB"
+disk: "20GiB"
+mountType: "virtiofs"
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+YAML
+
+    # Build mounts from registry — mount at the host path (Lima's native behavior)
+    # We create symlinks from /home/airlock/projects/<name> -> host path in apply_config
+    local count
+    count=$(mount_count)
+    if [ "$count" -gt 0 ]; then
+        echo ""
+        echo "mounts:"
+        while IFS='|' read -r name host_path vm_path; do
+            cat << YAML
+  - location: "$host_path"
+    writable: true
+YAML
+        done < <(get_all_mounts)
+    else
+        echo ""
+        echo "mounts: []"
+    fi
+
+    # Port forwarding
+    if [ -n "$port_range" ]; then
+        local start_port end_port
+        start_port="${port_range%%:*}"
+        end_port="${port_range##*:}"
+        cat << YAML
+
+portForwards:
+  - guestPortRange: [$start_port, $end_port]
+    hostPortRange: [$start_port, $end_port]
+YAML
+    else
+        echo ""
+        echo "portForwards: []"
+    fi
+}
+
+# Apply the current mount registry to the VM (stop, rewrite config, start)
+apply_config() {
+    local port_range="${1:-$PORT_RANGE_DEFAULT}"
+    local was_running=false
+
+    if vm_running; then
+        was_running=true
+        blue "Stopping VM to apply config..."
+        limactl stop "$AIRLOCK_NAME"
+    fi
+
+    local lima_config="$HOME/.lima/$AIRLOCK_NAME/lima.yaml"
+    generate_config "$port_range" > "$lima_config"
+
+    if [ "$was_running" = true ] || ! vm_running; then
+        blue "Starting VM..."
+        limactl start "$AIRLOCK_NAME"
+    fi
+
+    # Map airlock UID to match host files
+    local host_uid
+    host_uid=$(run_in_vm id -u 2>/dev/null || echo "")
+    if [ -n "$host_uid" ]; then
+        run_in_vm sudo usermod -u "$host_uid" airlock 2>/dev/null || true
+    fi
+
+    # Create symlinks from /home/airlock/projects/<n> -> host mount path
+    # Lima mounts host dirs at the same path inside the VM by default
+    run_in_vm sudo mkdir -p "$AIRLOCK_PROJECTS"
+    run_in_vm sudo chown "$AIRLOCK_USER:$AIRLOCK_USER" "$AIRLOCK_PROJECTS"
+
+    while IFS='|' read -r name host_path vm_path; do
+        run_in_vm sudo ln -sfn "$host_path" "$vm_path"
+    done < <(get_all_mounts)
+}
+
+# ── VM provisioning ────────────────────────────────────────────────
+
+provision_vm() {
+    blue "Installing system packages..."
+    run_in_vm sudo bash -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y curl jq iptables unzip git'
+
+    blue "Installing Node.js 22..."
+    run_in_vm sudo bash -c 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs'
+
+    blue "Installing pnpm..."
+    run_in_vm sudo npm install -g pnpm
+
+    blue "Installing bun..."
+    run_in_vm sudo bash -c 'export HOME=/root && curl -fsSL https://bun.sh/install | bash && cp /root/.bun/bin/bun /usr/local/bin/bun && chmod +x /usr/local/bin/bun' || dim "  Bun install failed (non-fatal)"
+
+    blue "Installing Claude Code..."
+    run_in_vm sudo bash -c 'export HOME=/root && curl -fsSL https://claude.ai/install.sh | bash' || dim "  Claude Code install failed (non-fatal)"
+    # Symlink to system path so all users can access it
+    run_in_vm sudo bash -c 'ln -sf /root/.claude/bin/claude /usr/local/bin/claude 2>/dev/null || ln -sf /root/.local/bin/claude /usr/local/bin/claude 2>/dev/null' || true
+
+    blue "Creating airlock user..."
+    run_in_vm sudo bash -c 'id airlock &>/dev/null || useradd -m -s /bin/bash airlock'
+    run_in_vm sudo mkdir -p /home/airlock/.npm-global "$AIRLOCK_PROJECTS"
+    run_in_vm sudo chown -R airlock:airlock /home/airlock
+    run_in_vm sudo -u airlock npm config set prefix /home/airlock/.npm-global
+    run_in_vm sudo bash -c 'echo "export PATH=/home/airlock/.npm-global/bin:\$PATH" >> /home/airlock/.bashrc'
+
+    run_in_vm id airlock || die "Failed to create airlock user"
+    green "VM provisioned."
+}
+
+# ── Package manager resolution ──────────────────────────────────────
+
+resolve_pm() {
+    local pm="$1"
+    case "$pm" in
+        npm)
+            PM_INSTALL="npm ci --ignore-scripts"
+            PM_INSTALL_FULL="npm ci"
+            PM_AUDIT="npm audit"
+            PM_SIGNATURES="npm audit signatures"
+            PM_LOCKFILE="package-lock.json"
+            PM_DEV="npm run dev"
+            PM_START="npm start"
+            PM_SCRIPTS_CHECK='cat node_modules/.package-lock.json 2>/dev/null | jq -r ".packages | to_entries[] | select(.value.hasInstallScript) | .key" 2>/dev/null'
+            ;;
+        pnpm)
+            PM_INSTALL="pnpm install --frozen-lockfile --ignore-scripts"
+            PM_INSTALL_FULL="pnpm install --frozen-lockfile"
+            PM_AUDIT="pnpm audit"
+            PM_SIGNATURES=""
+            PM_LOCKFILE="pnpm-lock.yaml"
+            PM_DEV="pnpm dev"
+            PM_START="pnpm start"
+            PM_SCRIPTS_CHECK='cat node_modules/.modules.yaml 2>/dev/null || echo "(pnpm: check pnpm-lock.yaml for lifecycle scripts)"'
+            ;;
+        bun)
+            PM_INSTALL="bun install --frozen-lockfile --ignore-scripts"
+            PM_INSTALL_FULL="bun install --frozen-lockfile"
+            PM_AUDIT=""
+            PM_SIGNATURES=""
+            PM_LOCKFILE="bun.lockb"
+            PM_DEV="bun run dev"
+            PM_START="bun start"
+            PM_SCRIPTS_CHECK='echo "(bun: review bunfig.toml and package.json scripts manually)"'
+            ;;
+        *)
+            die "Unknown package manager: $pm. Use npm, pnpm, or bun."
+            ;;
+    esac
+}
+
+# Stage files into VM via /tmp (for audit/full modes — no host mounts)
+copy_project() {
+    local project_dir="$1"
+    local project_name="$2"
+    local dest="$AIRLOCK_PROJECTS/$project_name"
+    local staging="/tmp/airlock-staging-$project_name"
+
+    run_in_vm sudo bash -c 'id airlock &>/dev/null || useradd -m -s /bin/bash airlock'
+    run_in_vm sudo mkdir -p "$AIRLOCK_PROJECTS"
+    run_in_vm sudo chown "$AIRLOCK_USER:$AIRLOCK_USER" "$AIRLOCK_PROJECTS"
+
+    run_in_vm sudo rm -rf "$dest" "$staging"
+    run_in_vm sudo mkdir -p "$staging"
+    run_in_vm sudo chmod 777 "$staging"
+
+    blue "Copying project files to $project_name..."
+    limactl copy "$project_dir/package.json" "${AIRLOCK_NAME}:${staging}/package.json"
+
+    if [ -f "$project_dir/$PM_LOCKFILE" ]; then
+        limactl copy "$project_dir/$PM_LOCKFILE" "${AIRLOCK_NAME}:${staging}/$PM_LOCKFILE"
+    else
+        dim "  No $PM_LOCKFILE found, install will generate one"
+    fi
+
+    for f in .npmrc .nvmrc bunfig.toml .pnpmfile.cjs pnpm-workspace.yaml; do
+        if [ -f "$project_dir/$f" ]; then
+            limactl copy "$project_dir/$f" "${AIRLOCK_NAME}:${staging}/$f"
+        fi
+    done
+
+    run_in_vm sudo mv "$staging" "$dest"
+    run_in_vm sudo chown -R "$AIRLOCK_USER:$AIRLOCK_USER" "$dest"
+}
+
+# ── Commands ────────────────────────────────────────────────────────
+
+cmd_setup() {
+    if vm_exists; then
+        die "Airlock already exists. Run 'airlock destroy' first to recreate."
+    fi
+
+    blue "Setting up airlock VM..."
+    mkdir -p "$STATE_DIR"
+    echo '[]' > "$MOUNTS_FILE"
+
+    local config_path
+    config_path="$(mktemp /tmp/airlock-XXXXXXXXXX)"
+    mv "$config_path" "${config_path}.yaml"
+    config_path="${config_path}.yaml"
+
+    generate_config > "$config_path"
+
+    limactl create --name="$AIRLOCK_NAME" "$config_path"
+    limactl start "$AIRLOCK_NAME"
+    rm "$config_path"
+
+    provision_vm
+
+    blue "Saving clean baseline..."
+    limactl stop "$AIRLOCK_NAME"
+    rsync -a --exclude='*.sock' "$HOME/.lima/$AIRLOCK_NAME/" "$HOME/.lima/${AIRLOCK_NAME}-clean/"
+    limactl start "$AIRLOCK_NAME"
+
+    green "Airlock ready."
+    echo ""
+    dim "  airlock <npm|pnpm|bun> <dir>            Audit packages (isolated, no host mounts)"
+    dim "  airlock <npm|pnpm|bun> <dir> dev         Dev mode (mounts project, ports forwarded)"
+    dim "  airlock <npm|pnpm|bun> <dir> full        Install with scripts + locked network shell"
+}
+
+cmd_audit() {
+    local pm="$1"
+    local project_dir="$2"
+
+    resolve_pm "$pm"
+    ensure_vm
+
+    run_in_vm which "$pm" >/dev/null 2>&1 || die "$pm not found in airlock. Run 'airlock setup' to rebuild."
+
+    local project_name
+    project_name="$(basename "$project_dir")"
+    local dest="$AIRLOCK_PROJECTS/$project_name"
+
+    copy_project "$project_dir" "$project_name"
+
+    blue "Installing dependencies (lifecycle scripts disabled)..."
+    run_as_airlock "cd $dest && $PM_INSTALL 2>&1" || true
+
+    echo ""
+    green "=== Audit ==="
+    if [ -n "$PM_AUDIT" ]; then
+        run_as_airlock "cd $dest && $PM_AUDIT 2>&1" || true
+    else
+        dim "  ($pm does not have a built-in audit command)"
+    fi
+
+    echo ""
+    green "=== Packages with install scripts ==="
+    run_as_airlock "cd $dest && $PM_SCRIPTS_CHECK" || echo "  (none found)"
+
+    if [ -n "$PM_SIGNATURES" ]; then
+        echo ""
+        green "=== Signature verification ==="
+        run_as_airlock "cd $dest && $PM_SIGNATURES 2>&1" || true
+    fi
+
+    echo ""
+    dim "Next steps:"
+    dim "  airlock $pm $project_dir dev     Mount project + start dev server"
+    dim "  airlock $pm $project_dir full    Install with scripts + locked shell"
+}
+
+cmd_full() {
+    local pm="$1"
+    local project_dir="$2"
+
+    resolve_pm "$pm"
+    ensure_vm
+
+    local project_name
+    project_name="$(basename "$project_dir")"
+    local dest="$AIRLOCK_PROJECTS/$project_name"
+
+    copy_project "$project_dir" "$project_name"
+
+    blue "Installing with lifecycle scripts enabled..."
+    run_as_airlock "cd $dest && $PM_INSTALL_FULL 2>&1"
+
+    lock_network
+
+    green "Dropped into airlock ($project_name). Network is locked. Type 'exit' when done."
+    run_in_vm sudo -u "$AIRLOCK_USER" bash --login -c "cd $dest && exec bash --login"
+}
+
+cmd_dev() {
+    local pm="$1"
+    local project_dir="$2"
+    local port_range="${3:-$PORT_RANGE_DEFAULT}"
+    local run_cmd="${4:-}"
+
+    resolve_pm "$pm"
+    ensure_vm
+
+    local project_name
+    project_name=$(project_name_from_path "$project_dir")
+    local vm_path="$AIRLOCK_PROJECTS/$project_name"
+
+    blue "Adding project: $project_name"
+    blue "  Host: $project_dir"
+    blue "  VM:   $vm_path"
+    echo ""
+
+    # Register this mount
+    register_mount "$project_name" "$project_dir" "$vm_path"
+
+    # Apply all mounts (restarts VM)
+    apply_config "$port_range"
+
+    blue "Installing dependencies for $project_name..."
+    run_as_airlock "cd $vm_path && $PM_INSTALL_FULL 2>&1"
+
+    echo ""
+    green "Dev airlock ready: $project_name"
+    dim "  Synced at $vm_path"
+    dim "  Ports $port_range forwarded to localhost"
+
+    # Show all mounted projects
+    local count
+    count=$(mount_count)
+    if [ "$count" -gt 1 ]; then
+        echo ""
+        dim "  All mounted projects:"
+        while IFS='|' read -r name host_path vm_p; do
+            dim "    $name -> $vm_p"
+        done < <(get_all_mounts)
+    fi
+    echo ""
+
+    if [ -n "$run_cmd" ]; then
+        blue "Running: $run_cmd"
+        run_as_airlock "cd $vm_path && $run_cmd"
+    else
+        green "Dropping into shell at $project_name:"
+        dim "  $PM_DEV"
+        dim "  $PM_START"
+        dim "  cd ../other-project    # switch between mounted projects"
+        echo ""
+        run_in_vm sudo -u "$AIRLOCK_USER" bash --login -c "cd $vm_path && exec bash --login"
+    fi
+}
+
+cmd_run() {
+    local run_cmd="$1"
+    ensure_vm
+    blue "Running: $run_cmd"
+    run_as_airlock "cd $AIRLOCK_PROJECTS && $run_cmd"
+}
+
+cmd_claude() {
+    local project_dir="$1"
+    local claude_args="${2:-}"
+    local port_range="$PORT_RANGE_DEFAULT"
+
+    ensure_vm
+
+    # Verify claude is installed in the VM
+    run_in_vm which claude >/dev/null 2>&1 || die "Claude Code not found in airlock. Run 'airlock destroy && airlock setup' to rebuild."
+
+    local project_name
+    project_name=$(project_name_from_path "$project_dir")
+    local vm_path="$AIRLOCK_PROJECTS/$project_name"
+
+    blue "Setting up Claude Code airlock for: $project_dir"
+    echo ""
+
+    # Mount the project directory (same as dev mode)
+    register_mount "$project_name" "$project_dir" "$vm_path"
+    apply_config "$port_range"
+
+    # Claude Code needs ~/.claude for auth config.
+    # Mount host's ~/.claude as read-only so credentials carry over
+    # without letting the airlock modify them.
+    # Lima can't do per-mount read-only after initial config easily,
+    # so we copy the auth config into the VM instead.
+    if [ -d "$HOME/.claude" ]; then
+        blue "Copying Claude auth config into airlock..."
+        local staging="/tmp/claude-config-staging"
+        run_in_vm sudo rm -rf "$staging" "$AIRLOCK_HOME/.claude"
+        run_in_vm sudo mkdir -p "$staging"
+        run_in_vm sudo chmod 777 "$staging"
+
+        # Copy only auth-related files, not settings that might override behavior
+        for f in credentials.json .credentials; do
+            if [ -f "$HOME/.claude/$f" ]; then
+                limactl copy "$HOME/.claude/$f" "${AIRLOCK_NAME}:${staging}/$f"
+            fi
+        done
+
+        # Copy the whole dir if individual files don't exist (auth format may vary)
+        if [ ! -f "$HOME/.claude/credentials.json" ] && [ ! -f "$HOME/.claude/.credentials" ]; then
+            # Fall back to copying everything — claude stores auth in various places
+            for f in "$HOME/.claude"/*; do
+                [ -f "$f" ] && limactl copy "$f" "${AIRLOCK_NAME}:${staging}/$(basename "$f")" 2>/dev/null || true
+            done
+        fi
+
+        run_in_vm sudo mv "$staging" "$AIRLOCK_HOME/.claude"
+        run_in_vm sudo chown -R "$AIRLOCK_USER:$AIRLOCK_USER" "$AIRLOCK_HOME/.claude"
+    else
+        dim "  No ~/.claude config found. You'll need to authenticate inside the airlock."
+    fi
+
+    # Also set ANTHROPIC_API_KEY if it's in the host environment
+    local api_key_env=""
+    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        api_key_env="export ANTHROPIC_API_KEY='$ANTHROPIC_API_KEY' && "
+    fi
+
+    echo ""
+    green "Claude Code airlock ready: $project_name"
+    dim "  Project: $vm_path (synced with host)"
+    dim "  Ports $port_range forwarded to localhost"
+    dim "  Claude Code has write access ONLY to the project directory"
+    echo ""
+
+    if [ -n "$claude_args" ]; then
+        blue "Running: claude $claude_args"
+        run_as_airlock "${api_key_env}cd $vm_path && claude $claude_args"
+    else
+        blue "Starting Claude Code..."
+        run_in_vm sudo -u "$AIRLOCK_USER" bash --login -c "${api_key_env}cd $vm_path && claude"
+    fi
+}
+
+cmd_shell() {
+    ensure_vm
+    run_in_vm sudo -u "$AIRLOCK_USER" bash --login -c "cd $AIRLOCK_PROJECTS 2>/dev/null; exec bash --login"
+}
+
+cmd_list() {
+    init_mounts_file
+    local count
+    count=$(mount_count)
+
+    if [ "$count" -eq 0 ]; then
+        dim "No projects mounted. Use 'airlock <npm|pnpm|bun> <dir> dev' to add one."
+        return
+    fi
+
+    echo "Mounted projects ($count):"
+    echo ""
+    while IFS='|' read -r name host_path vm_path; do
+        echo "  $name"
+        dim "    host: $host_path"
+        dim "    vm:   $vm_path"
+    done < <(get_all_mounts)
+}
+
+cmd_remove() {
+    local name="$1"
+
+    init_mounts_file
+
+    local vm_path
+    vm_path=$(get_vm_path "$name")
+    [ -n "$vm_path" ] || die "Project '$name' not found. Run 'airlock list' to see mounted projects."
+
+    blue "Removing project: $name"
+    unregister_mount "$name"
+
+    # Reapply config without this mount
+    apply_config "$PORT_RANGE_DEFAULT"
+
+    green "Project '$name' removed."
+    dim "  Run 'airlock list' to see remaining mounts."
+}
+
+cmd_lock() {
+    ensure_vm
+    lock_network
+}
+
+cmd_unlock() {
+    ensure_vm
+    unlock_network
+}
+
+cmd_stop() {
+    limactl stop "$AIRLOCK_NAME" 2>/dev/null && green "Airlock stopped." || dim "Airlock not running."
+}
+
+cmd_reset() {
+    local clean="$HOME/.lima/${AIRLOCK_NAME}-clean"
+    [ -d "$clean" ] || die "No clean baseline found. Run 'airlock setup' first."
+
+    limactl stop "$AIRLOCK_NAME" 2>/dev/null || true
+    rm -rf "$HOME/.lima/$AIRLOCK_NAME"
+    rsync -a --exclude='*.sock' "$clean/" "$HOME/.lima/$AIRLOCK_NAME/"
+
+    # Clear mount registry
+    echo '[]' > "$MOUNTS_FILE"
+
+    limactl start "$AIRLOCK_NAME"
+    green "Airlock reset to clean state (no mounts, no port forwarding)."
+}
+
+cmd_destroy() {
+    limactl stop "$AIRLOCK_NAME" 2>/dev/null || true
+    limactl delete "$AIRLOCK_NAME" 2>/dev/null || true
+    rm -rf "$HOME/.lima/${AIRLOCK_NAME}-clean" "$STATE_DIR"
+    green "Airlock destroyed."
+}
+
+cmd_status() {
+    if ! vm_exists; then
+        dim "Airlock does not exist. Run 'airlock setup' to create."
+        return
+    fi
+
+    local status
+    status=$(limactl list "$AIRLOCK_NAME" --format '{{.Status}}' 2>/dev/null)
+    echo "VM:      $AIRLOCK_NAME ($status)"
+
+    if [ "$status" = "Running" ]; then
+        local node_v
+        node_v=$(run_in_vm node --version 2>/dev/null || echo "not installed")
+        echo "Node:    $node_v"
+
+        local count
+        count=$(mount_count)
+        echo "Mounts:  $count project(s)"
+        if [ "$count" -gt 0 ]; then
+            while IFS='|' read -r name host_path vm_path; do
+                echo "         $name -> $vm_path"
+            done < <(get_all_mounts)
+        fi
+
+        if run_in_vm sudo iptables -L OUTPUT -n 2>/dev/null | grep -q DROP; then
+            echo "Network: LOCKED"
+        else
+            echo "Network: open"
+        fi
+    fi
+}
+
+# ── Usage ───────────────────────────────────────────────────────────
+usage() {
+    cat << 'EOF'
+airlock - secure npm/pnpm/bun airlock using Lima VMs
+
+Usage:
+  airlock setup                                    Create and provision the airlock VM
+
+  airlock <npm|pnpm|bun> <dir>                     Audit (isolated, no host mounts)
+  airlock <npm|pnpm|bun> <dir> full                Install with scripts + locked network shell
+  airlock <npm|pnpm|bun> <dir> dev                 Dev mode (mount + install + shell)
+  airlock <npm|pnpm|bun> <dir> dev <ports>         Dev mode with custom port range
+  airlock <npm|pnpm|bun> <dir> dev <ports> <cmd>   Dev mode, run command immediately
+
+  airlock claude <dir>                             Run Claude Code airlocked to a project dir
+  airlock claude <dir> <args>                      Run Claude Code with extra arguments
+
+  airlock list                                     Show all mounted projects
+  airlock remove <name>                            Unmount a project
+  airlock shell                                    Shell into the airlock (projects dir)
+  airlock run <command>                            Run a command in the projects dir
+  airlock lock                                     Block outbound network
+  airlock unlock                                   Re-enable outbound network
+  airlock status                                   Show VM status, mounts, network
+  airlock stop                                     Stop the VM
+  airlock reset                                    Reset to clean baseline (clears all mounts)
+  airlock destroy                                  Delete everything
+
+Examples:
+  airlock setup                                    One-time VM creation
+
+  airlock npm ./frontend dev                       Mount frontend, install, drop into shell
+  airlock pnpm ./api dev 8080:8080                 Add API project on port 8080
+  airlock bun ./worker dev 9000:9000 "bun start"   Add worker, run immediately
+
+  airlock list                                     See all mounted projects
+  airlock shell                                    Shell in — cd between projects
+  airlock run "cd frontend && npm test"            Run tests in a specific project
+  airlock remove api                               Unmount the API project
+
+  airlock npm ./sketchy-lib                        Audit a package (fully isolated)
+  airlock npm ./sketchy-lib full                   Install with scripts, lock network
+
+  airlock claude .                                 Run Claude Code in current dir (airlocked)
+  airlock claude ./my-app                          Run Claude Code in a specific project
+  airlock claude ./my-app --print "fix the tests"  Run Claude Code non-interactively
+
+Security modes:
+  audit   No host mounts. Files copied in. Full isolation. For vetting new packages.
+  full    No host mounts. Scripts enabled. Network locked after install.
+  dev     Project dir mounted read-write. Ports forwarded. Multiple projects supported.
+  claude  Project dir mounted read-write. Network open (API access). Claude Code airlocked.
+EOF
+}
+
+# ── Main ────────────────────────────────────────────────────────────
+main() {
+    [ $# -eq 0 ] && { usage; exit 0; }
+
+    local cmd="$1"
+    shift
+
+    case "$cmd" in
+        setup)   cmd_setup ;;
+        shell)   cmd_shell ;;
+        run)     cmd_run "$*" ;;
+        claude)
+            local project_dir="${1:-.}"
+            [ -d "$project_dir" ] || die "Directory not found: $project_dir"
+            project_dir="$(cd "$project_dir" && pwd)"
+            shift || true
+            local claude_args="$*"
+            cmd_claude "$project_dir" "$claude_args"
+            ;;
+        list)    cmd_list ;;
+        remove)  [ $# -ge 1 ] || die "Usage: airlock remove <project-name>"; cmd_remove "$1" ;;
+        lock)    cmd_lock ;;
+        unlock)  cmd_unlock ;;
+        stop)    cmd_stop ;;
+        reset)   cmd_reset ;;
+        destroy) cmd_destroy ;;
+        status)  cmd_status ;;
+        version|-v|--version) echo "airlock $AIRLOCK_VERSION" ;;
+        help|-h|--help) usage ;;
+        npm|pnpm|bun)
+            local pm="$cmd"
+            local project_dir="${1:-.}"
+            local mode="${2:-audit}"
+
+            [ -d "$project_dir" ] || die "Directory not found: $project_dir"
+            project_dir="$(cd "$project_dir" && pwd)"
+            [ -f "$project_dir/package.json" ] || die "No package.json in $project_dir"
+
+            case "$mode" in
+                audit) cmd_audit "$pm" "$project_dir" ;;
+                full)  cmd_full "$pm" "$project_dir" ;;
+                dev)
+                    local port_range="${3:-$PORT_RANGE_DEFAULT}"
+                    local run_cmd="${4:-}"
+                    cmd_dev "$pm" "$project_dir" "$port_range" "$run_cmd"
+                    ;;
+                *)     die "Unknown mode: $mode. Use 'audit', 'full', or 'dev'." ;;
+            esac
+            ;;
+        *)
+            die "Unknown command: $cmd. Run 'airlock help' for usage."
+            ;;
+    esac
+}
+
+main "$@"
