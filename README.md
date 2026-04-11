@@ -1,6 +1,6 @@
 # airlock [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A CLI tool that runs npm/pnpm/bun projects inside a Lima VM on macOS. The VM has no access to your home directory, SSH keys, or anything else on your host. Only the project directory you explicitly pass in gets mounted.
+A CLI tool that runs npm/pnpm/bun projects inside a Lima VM on macOS. The VM has no access to your home directory, SSH keys, or anything else on your host. Only directories you explicitly mount get exposed — the project you pass on the command line, plus any extras declared in `airlock.toml`.
 
 Built for two problems:
 1. Vetting npm packages before trusting them with your filesystem
@@ -128,7 +128,21 @@ path = "./api"
 
 [[mounts]]
 path = "./shared"
+writable = false        # read-only (default: true)
+
+[[mounts]]
+path = "./data"
+writable = true
+inotify = true          # file-watch events in VM (Lima ≥ 0.21, default: false)
 ```
+
+**Mount options:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `path` | — | Required. Path relative to `airlock.toml` |
+| `writable` | `true` | `false` = read-only inside VM |
+| `inotify` | `false` | `true` = enable inotify file-watch events (Lima ≥ 0.21). Needed for hot-reload tools that watch via inotify rather than polling |
 
 When `[services] compose` is set, `airlock dev` runs `docker compose up -d` inside the VM before starting your app. Services are reachable from your app code at `localhost:<port>` as normal. To also reach a service from your host (e.g. a DB client), include its port in `[dev] ports`.
 

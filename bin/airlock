@@ -2,7 +2,7 @@
 set -euo pipefail
 
 AIRLOCK_NAME="npm-airlock"
-AIRLOCK_VERSION="0.0.3"
+AIRLOCK_VERSION="0.0.4"
 AIRLOCK_HOME="/home/airlock"
 AIRLOCK_USER="airlock"
 AIRLOCK_PROJECTS="$AIRLOCK_HOME/projects"
@@ -104,6 +104,8 @@ register_mount() {
     local name="$1"
     local host_path="$2"
     local vm_path="$3"
+    local writable="${4:-true}"
+    local inotify="${5:-false}"
 
     init_mounts_file
 
@@ -112,8 +114,10 @@ register_mount() {
     updated=$(jq --arg p "$host_path" '[.[] | select(.host_path != $p)]' "$MOUNTS_FILE")
 
     # Add new entry
-    updated=$(echo "$updated" | jq --arg n "$name" --arg hp "$host_path" --arg vp "$vm_path" \
-        '. + [{"name": $n, "host_path": $hp, "vm_path": $vp}]')
+    updated=$(echo "$updated" | jq \
+        --arg n "$name" --arg hp "$host_path" --arg vp "$vm_path" \
+        --argjson w "$writable" --argjson ini "$inotify" \
+        '. + [{"name": $n, "host_path": $hp, "vm_path": $vp, "writable": $w, "inotify": $ini}]')
 
     echo "$updated" > "$MOUNTS_FILE"
 }
@@ -127,10 +131,10 @@ unregister_mount() {
     echo "$updated" > "$MOUNTS_FILE"
 }
 
-# Get all registered mounts as lines of "name|host_path|vm_path"
+# Get all registered mounts as lines of "name|host_path|vm_path|writable|inotify"
 get_all_mounts() {
     init_mounts_file
-    jq -r '.[] | "\(.name)|\(.host_path)|\(.vm_path)"' "$MOUNTS_FILE"
+    jq -r '.[] | "\(.name)|\(.host_path)|\(.vm_path)|\(.writable // true)|\(.inotify // false)"' "$MOUNTS_FILE"
 }
 
 # Get the VM path for a given project name
@@ -172,7 +176,7 @@ load_project_config() {
     CONFIG_COMMAND="$(yq -p toml '.dev.command // ""' "$config")"
     CONFIG_SERVICES_COMPOSE="$(yq -p toml '.services.compose // ""' "$config")"
 
-    # Read [[mounts]] array — each entry has a .path key
+    # Read [[mounts]] array — each entry has .path, optional .writable (default true), .inotify (default false)
     CONFIG_MOUNTS=()
     local mount_count
     mount_count="$(yq -p toml '.mounts | length // 0' "$config" 2>/dev/null || echo 0)"
@@ -187,7 +191,10 @@ load_project_config() {
         # Resolve relative paths to absolute
         local abs
         abs="$(cd "$dir" && cd "$rel" 2>/dev/null && pwd)" || die "Mount path '$rel' in $config does not exist."
-        CONFIG_MOUNTS+=("$abs")
+        local writable inotify
+        writable="$(yq -p toml ".mounts[$i].writable // true" "$config")"
+        inotify="$(yq -p toml ".mounts[$i].inotify // false" "$config")"
+        CONFIG_MOUNTS+=("$abs|$writable|$inotify")
         i=$((i + 1))
     done
 }
@@ -223,11 +230,12 @@ YAML
     if [ "$count" -gt 0 ]; then
         echo ""
         echo "mounts:"
-        while IFS='|' read -r name host_path vm_path; do
-            cat << YAML
-  - location: "$host_path"
-    writable: true
-YAML
+        while IFS='|' read -r name host_path vm_path writable inotify; do
+            echo "  - location: \"$host_path\""
+            echo "    writable: ${writable:-true}"
+            if [ "${inotify:-false}" = "true" ]; then
+                echo "    mountInotify: true"
+            fi
         done < <(get_all_mounts)
     else
         echo ""
@@ -285,7 +293,7 @@ apply_config() {
     run_in_vm sudo mkdir -p "$AIRLOCK_PROJECTS"
     run_in_vm sudo chown "$AIRLOCK_USER:$AIRLOCK_USER" "$AIRLOCK_PROJECTS"
 
-    while IFS='|' read -r name host_path vm_path; do
+    while IFS='|' read -r name host_path vm_path writable inotify; do
         run_in_vm sudo ln -sfn "$host_path" "$vm_path"
     done < <(get_all_mounts)
 }
@@ -548,9 +556,12 @@ cmd_dev() {
 
     # Register extra mounts from airlock.toml [[mounts]]
     for extra in "${CONFIG_MOUNTS[@]+"${CONFIG_MOUNTS[@]}"}"; do
-        local extra_name
-        extra_name=$(project_name_from_path "$extra")
-        register_mount "$extra_name" "$extra" "$AIRLOCK_PROJECTS/$extra_name"
+        local extra_path extra_writable extra_inotify extra_name
+        extra_path="${extra%%|*}"
+        extra_writable="$(echo "$extra" | cut -d'|' -f2)"
+        extra_inotify="$(echo "$extra" | cut -d'|' -f3)"
+        extra_name=$(project_name_from_path "$extra_path")
+        register_mount "$extra_name" "$extra_path" "$AIRLOCK_PROJECTS/$extra_name" "${extra_writable:-true}" "${extra_inotify:-false}"
     done
 
     # Apply all mounts (restarts VM)
@@ -572,7 +583,7 @@ cmd_dev() {
     if [ "$count" -gt 1 ]; then
         echo ""
         dim "  All mounted projects:"
-        while IFS='|' read -r name host_path vm_p; do
+        while IFS='|' read -r name host_path vm_p writable inotify; do
             dim "    $name -> $vm_p"
         done < <(get_all_mounts)
     fi
@@ -627,9 +638,12 @@ cmd_claude() {
 
     # Register extra mounts from airlock.toml [[mounts]]
     for extra in "${CONFIG_MOUNTS[@]+"${CONFIG_MOUNTS[@]}"}"; do
-        local extra_name
-        extra_name=$(project_name_from_path "$extra")
-        register_mount "$extra_name" "$extra" "$AIRLOCK_PROJECTS/$extra_name"
+        local extra_path extra_writable extra_inotify extra_name
+        extra_path="${extra%%|*}"
+        extra_writable="$(echo "$extra" | cut -d'|' -f2)"
+        extra_inotify="$(echo "$extra" | cut -d'|' -f3)"
+        extra_name=$(project_name_from_path "$extra_path")
+        register_mount "$extra_name" "$extra_path" "$AIRLOCK_PROJECTS/$extra_name" "${extra_writable:-true}" "${extra_inotify:-false}"
     done
 
     apply_config "$port_range" "$cpu" "$memory" "$disk"
@@ -708,7 +722,7 @@ cmd_list() {
 
     echo "Mounted projects ($count):"
     echo ""
-    while IFS='|' read -r name host_path vm_path; do
+    while IFS='|' read -r name host_path vm_path writable inotify; do
         echo "  $name"
         dim "    host: $host_path"
         dim "    vm:   $vm_path"
@@ -789,7 +803,7 @@ cmd_status() {
         count=$(mount_count)
         echo "Mounts:  $count project(s)"
         if [ "$count" -gt 0 ]; then
-            while IFS='|' read -r name host_path vm_path; do
+            while IFS='|' read -r name host_path vm_path writable inotify; do
                 echo "         $name -> $vm_path"
             done < <(get_all_mounts)
         fi
