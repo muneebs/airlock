@@ -40,6 +40,10 @@ install_if_missing() {
 
 install_if_missing lima
 install_if_missing jq
+install_if_missing yq
+if ! yq --version 2>&1 | grep -q 'version v4'; then
+    warn "yq found but may not be v4. TOML support requires 'brew install yq' (mikefarah/yq)."
+fi
 
 # --- Install airlock binary ---
 

@@ -9,6 +9,11 @@ AIRLOCK_PROJECTS="$AIRLOCK_HOME/projects"
 STATE_DIR="$HOME/.airlock"
 MOUNTS_FILE="$STATE_DIR/mounts.json"  # tracks mounted projects
 PORT_RANGE_DEFAULT="3000:9999"
+CONFIG_FILE="airlock.toml"
+DEFAULT_CPU=2
+DEFAULT_MEMORY="4GiB"
+DEFAULT_DISK="20GiB"
+DEFAULT_NODE_VERSION=22
 
 # ── Colors ──────────────────────────────────────────────────────────
 red()   { echo -e "\033[0;31m$1\033[0m"; }
@@ -141,18 +146,66 @@ mount_count() {
     jq '. | length' "$MOUNTS_FILE"
 }
 
+# ── Project config loading ───────────────────────────────────────────
+
+load_project_config() {
+    local dir="$1"
+    local config="$dir/$CONFIG_FILE"
+
+    # Skip env var bypass (for testing)
+    [ -z "${AIRLOCK_NO_CONFIG:-}" ] || return 0
+
+    # No config file is normal — silently use defaults
+    [ -f "$config" ] || return 0
+
+    command -v yq >/dev/null 2>&1 || die "airlock.toml found but yq is not installed. Run install.sh to add yq."
+
+    # Validate TOML by attempting a parse
+    yq -p toml '.' "$config" >/dev/null 2>&1 || die "Invalid TOML in $config — fix the syntax and retry."
+
+    # Read scalar values (yq returns empty string, not "null", via // "")
+    CONFIG_CPU="$(yq -p toml '.vm.cpu // ""' "$config")"
+    CONFIG_MEMORY="$(yq -p toml '.vm.memory // ""' "$config")"
+    CONFIG_DISK="$(yq -p toml '.vm.disk // ""' "$config")"
+    CONFIG_NODE_VERSION="$(yq -p toml '.vm.node_version // ""' "$config")"
+    CONFIG_PORTS="$(yq -p toml '.dev.ports // ""' "$config")"
+    CONFIG_COMMAND="$(yq -p toml '.dev.command // ""' "$config")"
+
+    # Read [[mounts]] array — each entry has a .path key
+    CONFIG_MOUNTS=()
+    local mount_count
+    mount_count="$(yq -p toml '.mounts | length // 0' "$config" 2>/dev/null || echo 0)"
+    local i=0
+    while [ "$i" -lt "$mount_count" ]; do
+        local rel
+        rel="$(yq -p toml ".mounts[$i].path" "$config")"
+        if [ -z "$rel" ] || [ "$rel" = "null" ]; then
+            i=$((i + 1))
+            continue
+        fi
+        # Resolve relative paths to absolute
+        local abs
+        abs="$(cd "$dir" && cd "$rel" 2>/dev/null && pwd)" || die "Mount path '$rel' in $config does not exist."
+        CONFIG_MOUNTS+=("$abs")
+        i=$((i + 1))
+    done
+}
+
 # ── Lima config generation ──────────────────────────────────────────
 
 generate_config() {
     local port_range="${1:-}"
+    local cpu="${2:-$DEFAULT_CPU}"
+    local memory="${3:-$DEFAULT_MEMORY}"
+    local disk="${4:-$DEFAULT_DISK}"
 
     cat << YAML
 vmType: "vz"
 os: "Linux"
 arch: "default"
-cpus: 2
-memory: "4GiB"
-disk: "20GiB"
+cpus: $cpu
+memory: "$memory"
+disk: "$disk"
 mountType: "virtiofs"
 
 images:
@@ -200,6 +253,9 @@ YAML
 # Apply the current mount registry to the VM (stop, rewrite config, start)
 apply_config() {
     local port_range="${1:-$PORT_RANGE_DEFAULT}"
+    local cpu="${2:-$DEFAULT_CPU}"
+    local memory="${3:-$DEFAULT_MEMORY}"
+    local disk="${4:-$DEFAULT_DISK}"
     local was_running=false
 
     if vm_running; then
@@ -209,7 +265,7 @@ apply_config() {
     fi
 
     local lima_config="$HOME/.lima/$AIRLOCK_NAME/lima.yaml"
-    generate_config "$port_range" > "$lima_config"
+    generate_config "$port_range" "$cpu" "$memory" "$disk" > "$lima_config"
 
     if [ "$was_running" = true ] || ! vm_running; then
         blue "Starting VM..."
@@ -236,11 +292,13 @@ apply_config() {
 # ── VM provisioning ────────────────────────────────────────────────
 
 provision_vm() {
+    local node_version="${1:-$DEFAULT_NODE_VERSION}"
+
     blue "Installing system packages..."
     run_in_vm sudo bash -c 'export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y curl jq iptables unzip git'
 
-    blue "Installing Node.js 22..."
-    run_in_vm sudo bash -c 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs'
+    blue "Installing Node.js ${node_version}..."
+    run_in_vm sudo bash -c "curl -fsSL https://deb.nodesource.com/setup_${node_version}.x | bash - && apt-get install -y nodejs"
 
     blue "Installing pnpm..."
     run_in_vm sudo npm install -g pnpm
@@ -359,7 +417,7 @@ cmd_setup() {
     limactl start "$AIRLOCK_NAME"
     rm "$config_path"
 
-    provision_vm
+    provision_vm "$DEFAULT_NODE_VERSION"
 
     blue "Saving clean baseline..."
     limactl stop "$AIRLOCK_NAME"
@@ -440,11 +498,20 @@ cmd_full() {
 cmd_dev() {
     local pm="$1"
     local project_dir="$2"
-    local port_range="${3:-$PORT_RANGE_DEFAULT}"
-    local run_cmd="${4:-}"
+    local cli_port_range="${3:-}"
+    local cli_run_cmd="${4:-}"
 
     resolve_pm "$pm"
     ensure_vm
+
+    # Load airlock.toml if present (populates CONFIG_* globals)
+    load_project_config "$project_dir"
+
+    local port_range="${cli_port_range:-${CONFIG_PORTS:-$PORT_RANGE_DEFAULT}}"
+    local run_cmd="${cli_run_cmd:-${CONFIG_COMMAND:-}}"
+    local cpu="${CONFIG_CPU:-$DEFAULT_CPU}"
+    local memory="${CONFIG_MEMORY:-$DEFAULT_MEMORY}"
+    local disk="${CONFIG_DISK:-$DEFAULT_DISK}"
 
     local project_name
     project_name=$(project_name_from_path "$project_dir")
@@ -455,11 +522,18 @@ cmd_dev() {
     blue "  VM:   $vm_path"
     echo ""
 
-    # Register this mount
+    # Register primary mount
     register_mount "$project_name" "$project_dir" "$vm_path"
 
+    # Register extra mounts from airlock.toml [[mounts]]
+    for extra in "${CONFIG_MOUNTS[@]+"${CONFIG_MOUNTS[@]}"}"; do
+        local extra_name
+        extra_name=$(project_name_from_path "$extra")
+        register_mount "$extra_name" "$extra" "$AIRLOCK_PROJECTS/$extra_name"
+    done
+
     # Apply all mounts (restarts VM)
-    apply_config "$port_range"
+    apply_config "$port_range" "$cpu" "$memory" "$disk"
 
     blue "Installing dependencies for $project_name..."
     run_as_airlock "cd $vm_path && $PM_INSTALL_FULL 2>&1"
@@ -504,9 +578,16 @@ cmd_run() {
 cmd_claude() {
     local project_dir="$1"
     local claude_args="${2:-}"
-    local port_range="$PORT_RANGE_DEFAULT"
 
     ensure_vm
+
+    # Load airlock.toml if present (populates CONFIG_* globals)
+    load_project_config "$project_dir"
+
+    local port_range="${CONFIG_PORTS:-$PORT_RANGE_DEFAULT}"
+    local cpu="${CONFIG_CPU:-$DEFAULT_CPU}"
+    local memory="${CONFIG_MEMORY:-$DEFAULT_MEMORY}"
+    local disk="${CONFIG_DISK:-$DEFAULT_DISK}"
 
     # Verify claude is installed in the VM
     run_in_vm sudo -u "$AIRLOCK_USER" bash --login -c 'which claude' >/dev/null 2>&1 || die "Claude Code not found in airlock. Run 'airlock destroy && airlock setup' to rebuild."
@@ -520,7 +601,15 @@ cmd_claude() {
 
     # Mount the project directory (same as dev mode)
     register_mount "$project_name" "$project_dir" "$vm_path"
-    apply_config "$port_range"
+
+    # Register extra mounts from airlock.toml [[mounts]]
+    for extra in "${CONFIG_MOUNTS[@]+"${CONFIG_MOUNTS[@]}"}"; do
+        local extra_name
+        extra_name=$(project_name_from_path "$extra")
+        register_mount "$extra_name" "$extra" "$AIRLOCK_PROJECTS/$extra_name"
+    done
+
+    apply_config "$port_range" "$cpu" "$memory" "$disk"
 
     # Claude Code needs ~/.claude for auth config.
     # Mount host's ~/.claude as read-only so credentials carry over
