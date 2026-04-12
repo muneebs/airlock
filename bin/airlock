@@ -45,7 +45,7 @@ run_in_vm() {
 }
 
 run_as_airlock() {
-    run_in_vm sudo -u "$AIRLOCK_USER" bash -c "$1"
+    run_in_vm sudo -u "$AIRLOCK_USER" bash --login -c "$1"
 }
 
 lock_network() {
@@ -165,25 +165,25 @@ load_project_config() {
     command -v yq >/dev/null 2>&1 || die "airlock.toml found but yq is not installed. Run install.sh to add yq."
 
     # Validate TOML by attempting a parse
-    yq -p toml '.' "$config" >/dev/null 2>&1 || die "Invalid TOML in $config — fix the syntax and retry."
+    yq -p toml -oy '.' "$config" >/dev/null 2>&1 || die "Invalid TOML in $config — fix the syntax and retry."
 
     # Read scalar values (yq returns empty string, not "null", via // "")
-    CONFIG_CPU="$(yq -p toml '.vm.cpu // ""' "$config")"
-    CONFIG_MEMORY="$(yq -p toml '.vm.memory // ""' "$config")"
-    CONFIG_DISK="$(yq -p toml '.vm.disk // ""' "$config")"
-    CONFIG_NODE_VERSION="$(yq -p toml '.vm.node_version // ""' "$config")"
-    CONFIG_PORTS="$(yq -p toml '.dev.ports // ""' "$config")"
-    CONFIG_COMMAND="$(yq -p toml '.dev.command // ""' "$config")"
-    CONFIG_SERVICES_COMPOSE="$(yq -p toml '.services.compose // ""' "$config")"
+    CONFIG_CPU="$(yq -p toml -oy '.vm.cpu // ""' "$config")"
+    CONFIG_MEMORY="$(yq -p toml -oy '.vm.memory // ""' "$config")"
+    CONFIG_DISK="$(yq -p toml -oy '.vm.disk // ""' "$config")"
+    CONFIG_NODE_VERSION="$(yq -p toml -oy '.vm.node_version // ""' "$config")"
+    CONFIG_PORTS="$(yq -p toml -oy '.dev.ports // ""' "$config")"
+    CONFIG_COMMAND="$(yq -p toml -oy '.dev.command // ""' "$config")"
+    CONFIG_SERVICES_COMPOSE="$(yq -p toml -oy '.services.compose // ""' "$config")"
 
     # Read [[mounts]] array — each entry has .path, optional .writable (default true), .inotify (default false)
     CONFIG_MOUNTS=()
     local mount_count
-    mount_count="$(yq -p toml '.mounts | length // 0' "$config" 2>/dev/null || echo 0)"
+    mount_count="$(yq -p toml -oy '.mounts | length // 0' "$config" 2>/dev/null || echo 0)"
     local i=0
     while [ "$i" -lt "$mount_count" ]; do
         local rel
-        rel="$(yq -p toml ".mounts[$i].path" "$config")"
+        rel="$(yq -p toml -oy ".mounts[$i].path" "$config")"
         if [ -z "$rel" ] || [ "$rel" = "null" ]; then
             i=$((i + 1))
             continue
@@ -192,8 +192,8 @@ load_project_config() {
         local abs
         abs="$(cd "$dir" && cd "$rel" 2>/dev/null && pwd)" || die "Mount path '$rel' in $config does not exist."
         local writable inotify
-        writable="$(yq -p toml ".mounts[$i].writable // true" "$config")"
-        inotify="$(yq -p toml ".mounts[$i].inotify // false" "$config")"
+        writable="$(yq -p toml -oy ".mounts[$i].writable // true" "$config")"
+        inotify="$(yq -p toml -oy ".mounts[$i].inotify // false" "$config")"
         CONFIG_MOUNTS+=("$abs|$writable|$inotify")
         i=$((i + 1))
     done
@@ -364,6 +364,7 @@ resolve_pm() {
             PM_AUDIT=""
             PM_SIGNATURES=""
             PM_LOCKFILE="bun.lockb"
+            PM_LOCKFILE_ALT="bun.lock"
             PM_DEV="bun run dev"
             PM_START="bun start"
             PM_SCRIPTS_CHECK='echo "(bun: review bunfig.toml and package.json scripts manually)"'
@@ -392,10 +393,17 @@ copy_project() {
     blue "Copying project files to $project_name..."
     limactl copy "$project_dir/package.json" "${AIRLOCK_NAME}:${staging}/package.json"
 
+    local found_lockfile=false
     if [ -f "$project_dir/$PM_LOCKFILE" ]; then
         limactl copy "$project_dir/$PM_LOCKFILE" "${AIRLOCK_NAME}:${staging}/$PM_LOCKFILE"
-    else
-        dim "  No $PM_LOCKFILE found, install will generate one"
+        found_lockfile=true
+    fi
+    if [ -n "${PM_LOCKFILE_ALT:-}" ] && [ -f "$project_dir/$PM_LOCKFILE_ALT" ]; then
+        limactl copy "$project_dir/$PM_LOCKFILE_ALT" "${AIRLOCK_NAME}:${staging}/$PM_LOCKFILE_ALT"
+        found_lockfile=true
+    fi
+    if [ "$found_lockfile" = false ]; then
+        dim "  No lockfile found, install will generate one"
     fi
 
     for f in .npmrc .nvmrc bunfig.toml .pnpmfile.cjs pnpm-workspace.yaml; do
