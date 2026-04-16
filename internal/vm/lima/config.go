@@ -10,10 +10,33 @@ import (
 	"regexp"
 	"strings"
 
+	"strconv"
+
 	"github.com/muneebs/airlock/internal/api"
 	"gopkg.in/yaml.v3"
-	"strconv"
 )
+
+// sensitiveMountPaths are host paths that must never be mounted into a VM
+// because they expose system credentials, secrets, or privileged services.
+var sensitiveMountPaths = []string{
+	"/etc",
+	"/etc/shadow",
+	"/etc/passwd",
+	"/etc/ssh",
+	"/etc/ssl",
+	"/etc/pki",
+	"/var/run/docker.sock",
+	"/var/run/docker",
+	"/root",
+	"/home",
+	"/proc",
+	"/sys",
+	"/dev",
+}
+
+// dangerousShellChars matches characters that could enable shell injection
+// in provisioning commands. Allow only safe command-line characters.
+var dangerousShellChars = regexp.MustCompile(`[;&|$\x60!]`)
 
 // LimaConfig represents the Lima YAML configuration file format.
 type LimaConfig struct {
@@ -137,6 +160,17 @@ func parsePortRange(s string) (LimaPortForward, error) {
 
 var safePathRe = regexp.MustCompile(`^[a-zA-Z0-9_./-]+$`)
 
+func isSensitiveMountPath(path string) bool {
+	cleaned := filepath.Clean(path)
+	for _, sensitive := range sensitiveMountPaths {
+		sc := filepath.Clean(sensitive)
+		if cleaned == sc || strings.HasPrefix(cleaned, sc+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func validateSpec(spec api.VMSpec) error {
 	if spec.Name == "" {
 		return fmt.Errorf("name is required")
@@ -164,6 +198,9 @@ func validateSpec(spec api.VMSpec) error {
 		if strings.Contains(m.HostPath, "..") {
 			return fmt.Errorf("mount host_path %q must not contain ..", m.HostPath)
 		}
+		if isSensitiveMountPath(cleaned) {
+			return fmt.Errorf("mount host_path %q is not allowed: sensitive host path", cleaned)
+		}
 	}
 	if len(spec.ProvisionCmds) > 10 {
 		return fmt.Errorf("too many provision commands (max 10, got %d)", len(spec.ProvisionCmds))
@@ -171,6 +208,9 @@ func validateSpec(spec api.VMSpec) error {
 	for i, cmd := range spec.ProvisionCmds {
 		if len(cmd) > 4096 {
 			return fmt.Errorf("provision command %d exceeds max length of 4096", i)
+		}
+		if dangerousShellChars.MatchString(cmd) {
+			return fmt.Errorf("provision command %d contains disallowed shell metacharacters (;&|$`!): %q", i, cmd)
 		}
 	}
 	return nil
