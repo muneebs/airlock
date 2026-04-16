@@ -104,13 +104,18 @@ func (p *LimaProvider) RestoreClean(ctx context.Context, name string) error {
 }
 
 // HasCleanSnapshot checks whether a -clean baseline exists for the VM.
-func (p *LimaProvider) HasCleanSnapshot(name string) bool {
+func (p *LimaProvider) HasCleanSnapshot(ctx context.Context, name string) (bool, error) {
 	if err := validateName(name); err != nil {
-		return false
+		return false, fmt.Errorf("invalid vm name: %w", err)
 	}
 	cleanDir := filepath.Join(p.limaDir, name+"-clean")
-	_, err := os.Stat(cleanDir)
-	return err == nil
+	if _, err := os.Stat(cleanDir); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat clean snapshot dir: %w", err)
+	}
+	return true, nil
 }
 
 // ProvisionVM runs the standard provision commands for a fresh VM.
@@ -214,3 +219,9 @@ func copyDir(src, dst string) error {
 
 // Verify LimaProvider implements api.Provider at compile time.
 var _ api.Provider = (*LimaProvider)(nil)
+
+// Verify LimaProvider implements api.Provisioner at compile time.
+var _ api.Provisioner = (*LimaProvider)(nil)
+
+// Verify LimaProvider implements api.ShellProvider at compile time.
+var _ api.ShellProvider = (*LimaProvider)(nil)

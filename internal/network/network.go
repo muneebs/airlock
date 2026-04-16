@@ -4,8 +4,10 @@
 package network
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"sync"
 
@@ -22,32 +24,32 @@ type OutputRunner func(ctx context.Context, vmName, cmd string) (string, error)
 
 // LimaController manages network isolation by executing iptables commands
 // inside a Lima VM via limactl. It implements api.NetworkController.
+// The sandboxName parameter on each method determines which VM to target,
+// so a single controller can manage networking for multiple sandboxes.
 type LimaController struct {
-	vmName    string
 	runCmd    CommandRunner
 	runOutput OutputRunner
 	mu        sync.Mutex
-	policy    api.NetworkPolicy
-	applied   bool
+	policies  map[string]api.NetworkPolicy
 }
 
-// NewLimaController creates a network controller for the given VM name
-// using the default (production) limactl runners.
-func NewLimaController(vmName string) *LimaController {
+// NewLimaController creates a network controller using the default
+// (production) limactl runners.
+func NewLimaController() *LimaController {
 	return &LimaController{
-		vmName:    vmName,
 		runCmd:    limactlRunExec,
 		runOutput: limactlOutputExec,
+		policies:  make(map[string]api.NetworkPolicy),
 	}
 }
 
 // NewLimaControllerWithRunners creates a network controller with injectable
 // command runners, for testing.
-func NewLimaControllerWithRunners(vmName string, runCmd CommandRunner, runOutput OutputRunner) *LimaController {
+func NewLimaControllerWithRunners(runCmd CommandRunner, runOutput OutputRunner) *LimaController {
 	return &LimaController{
-		vmName:    vmName,
 		runCmd:    runCmd,
 		runOutput: runOutput,
+		policies:  make(map[string]api.NetworkPolicy),
 	}
 }
 
@@ -78,17 +80,24 @@ func (lc *LimaController) Unlock(ctx context.Context, sandboxName string) error 
 // configured (exposed) state.
 // LockAfterSetup in the policy is not consumed here — the sandbox orchestrator
 // reads it to decide whether to call Lock() after setup completes.
+//
+// SECURITY: The ruleset is passed to iptables-restore via a shell heredoc
+// with a quoted delimiter (<<'AIRLOCK_EOF'). The single-quoted delimiter
+// prevents bash from performing any interpolation (variable substitution,
+// command substitution, or escape processing) on the ruleset content. This
+// eliminates the command-injection risk that would exist if the ruleset were
+// embedded directly in a printf or echo command. Even if NetworkPolicy gains
+// string fields in the future, the heredoc content is treated as literal text.
 func (lc *LimaController) ApplyPolicy(ctx context.Context, sandboxName string, policy api.NetworkPolicy) error {
 	ruleset := buildOutputRules(policy)
-	cmd := fmt.Sprintf("printf '%%s' '%s' | sudo iptables-restore", ruleset)
+	cmd := fmt.Sprintf("sudo iptables-restore <<'AIRLOCK_EOF'\n%sAIRLOCK_EOF", ruleset)
 
-	if err := lc.runCmd(ctx, lc.vmName, cmd); err != nil {
+	if err := lc.runCmd(ctx, sandboxName, cmd); err != nil {
 		return fmt.Errorf("apply iptables policy: %w", err)
 	}
 
 	lc.mu.Lock()
-	lc.policy = policy
-	lc.applied = true
+	lc.policies[sandboxName] = policy
 	lc.mu.Unlock()
 
 	return nil
@@ -130,36 +139,66 @@ func buildOutputRules(policy api.NetworkPolicy) string {
 // it falls back to inspecting iptables rules in the VM.
 func (lc *LimaController) IsLocked(ctx context.Context, sandboxName string) (bool, error) {
 	lc.mu.Lock()
-	if lc.applied {
-		locked := !lc.policy.AllowOutbound
-		lc.mu.Unlock()
-		return locked, nil
-	}
+	policy, applied := lc.policies[sandboxName]
 	lc.mu.Unlock()
 
-	output, err := lc.runOutput(ctx, lc.vmName, "sudo iptables -L OUTPUT -n")
+	if applied {
+		return !policy.AllowOutbound, nil
+	}
+
+	output, err := lc.runOutput(ctx, sandboxName, "sudo iptables -L OUTPUT -n")
 	if err != nil {
 		return false, fmt.Errorf("check iptables: %w", err)
 	}
 	return strings.Contains(output, "DROP"), nil
 }
 
-// CurrentPolicy returns the last applied network policy, or false if none
-// has been applied yet.
-func (lc *LimaController) CurrentPolicy() (api.NetworkPolicy, bool) {
+// CurrentPolicy returns the last applied network policy for the given sandbox,
+// or false if none has been applied yet.
+func (lc *LimaController) CurrentPolicy(sandboxName string) (api.NetworkPolicy, bool) {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
-	return lc.policy, lc.applied
+	policy, ok := lc.policies[sandboxName]
+	return policy, ok
 }
 
-// limactlRunExec executes a command inside a Lima VM.
-// Not yet wired to exec.CommandContext — returns an error for now.
+// RemovePolicy removes the tracked policy for a sandbox from memory.
+// This should be called when a sandbox is destroyed to prevent memory leaks.
+func (lc *LimaController) RemovePolicy(_ context.Context, sandboxName string) error {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	delete(lc.policies, sandboxName)
+	return nil
+}
+
+// limactlRunExec executes a command inside a Lima VM via limactl shell.
 func limactlRunExec(ctx context.Context, vmName, cmd string) error {
-	return fmt.Errorf("limactlRun: not yet wired to exec")
+	limactl, err := exec.LookPath("limactl")
+	if err != nil {
+		return fmt.Errorf("limactl not found in PATH: %w", err)
+	}
+	c := exec.CommandContext(ctx, limactl, "shell", "--workdir", "/", vmName, "--", "bash", "-c", cmd)
+	var stderr bytes.Buffer
+	c.Stdout = nil
+	c.Stderr = &stderr
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("limactl exec in %s: %w: %s", vmName, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
-// limactlOutputExec executes a command inside a Lima VM and returns the output.
-// Not yet wired to exec.CommandContext — returns an error for now.
+// limactlOutputExec executes a command inside a Lima VM via limactl shell and returns the output.
 func limactlOutputExec(ctx context.Context, vmName, cmd string) (string, error) {
-	return "", fmt.Errorf("limactlOutput: not yet wired to exec")
+	limactl, err := exec.LookPath("limactl")
+	if err != nil {
+		return "", fmt.Errorf("limactl not found in PATH: %w", err)
+	}
+	c := exec.CommandContext(ctx, limactl, "shell", "--workdir", "/", vmName, "--", "bash", "-c", cmd)
+	var stderr bytes.Buffer
+	c.Stderr = &stderr
+	output, err := c.Output()
+	if err != nil {
+		return string(output), fmt.Errorf("limactl exec in %s: %w: %s", vmName, err, strings.TrimSpace(stderr.String()))
+	}
+	return string(output), nil
 }
