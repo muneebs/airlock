@@ -71,6 +71,19 @@ High-level packages (`sandbox`, `cmd`) depend on interfaces defined in their own
 
 ---
 
+## 6. AI Transparency
+
+This project is written with AI assistance. That fact is permanent and public. There is no shame in it — but there is responsibility.
+
+- **Full disclosure is mandatory.** Every PR must state whether AI tools were used in its creation, which tools, and to what extent. "AI-generated" or "AI-assisted" are both valid disclosures. Omission is dishonesty.
+- **AI is a tool, not an author.** AI-generated code must be reviewed, understood, and owned by the human who commits it. If you cannot explain every line of a PR, do not merge it. "The AI wrote it" is never an acceptable answer to a review question.
+- **AI-generated code must meet the same standard.** Tests, documentation, lint, vet, coverage — the same rules apply regardless of who or what wrote the code. AI does not get a pass on style, correctness, or security review.
+- **Prompt logs are not required, but honesty is.** You do not need to paste your prompts into a PR description. You do need to accurately represent the scope of AI involvement. Saying "AI-assisted" when the entire PR was generated is dishonest. Saying "AI-generated" when you wrote it yourself is also dishonest.
+- **Security-sensitive code demands extra scrutiny.** Network policy enforcement, mount handling, credential copying, and privilege escalation logic must be human-reviewed line-by-line regardless of origin. AI models can produce plausible-looking but subtly wrong security code. Trust nothing, verify everything.
+- **This rule exists to protect users.** Airlock's purpose is security isolation. A tool that hides how it was built cannot be trusted to build security tools. Transparency is not optional.
+
+---
+
 ## Enforcement
 
 - **PR reviews** must explicitly check against these principles. Reviewers: cite the principle by name when requesting a change.
