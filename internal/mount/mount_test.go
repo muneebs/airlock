@@ -213,3 +213,52 @@ func TestLoadEmptyFile(t *testing.T) {
 		t.Errorf("expected empty store, got %d mounts", s.Count())
 	}
 }
+
+func TestSanitizeName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"myproject", "myproject"},
+		{"../../etc/shadow", "shadow"},
+		{"/absolute/path/project", "project"},
+		{"..", "mount"},
+		{".", "mount"},
+		{"", "mount"},
+		{"foo..bar", "foobar"},
+		{"a/../../../b", "b"},
+	}
+	for _, tt := range tests {
+		got := sanitizeName(tt.input)
+		if got != tt.want {
+			t.Errorf("sanitizeName(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestRegisterSanitizesName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mounts.json")
+
+	s, err := NewJSONStore(path)
+	if err != nil {
+		t.Fatalf("NewJSONStore() error: %v", err)
+	}
+
+	mount := api.Mount{
+		Name:     "../../etc/shadow",
+		HostPath: "/tmp/test",
+	}
+	err = s.Register(context.Background(), "test", mount)
+	if err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+
+	mounts, _ := s.List(context.Background(), "test")
+	if mounts[0].Name != "shadow" {
+		t.Errorf("expected sanitized name 'shadow', got %q", mounts[0].Name)
+	}
+	if mounts[0].VMPath != "/home/airlock/projects/shadow" {
+		t.Errorf("expected VMPath '/home/airlock/projects/shadow', got %q", mounts[0].VMPath)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/muneebs/airlock/internal/api"
@@ -64,7 +65,7 @@ func (s *JSONStore) Register(_ context.Context, sandboxName string, m api.Mount)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	m.Name = s.resolveName(m.Name, m.HostPath)
+	m.Name = s.resolveName(sanitizeName(m.Name), m.HostPath)
 	m.VMPath = fmt.Sprintf("/home/airlock/projects/%s", m.Name)
 
 	for i, existing := range s.mounts {
@@ -133,4 +134,13 @@ func (s *JSONStore) resolveName(base, hostPath string) string {
 		counter++
 		candidate = fmt.Sprintf("%s-%d", base, counter)
 	}
+}
+
+func sanitizeName(name string) string {
+	name = filepath.Base(name)
+	name = strings.ReplaceAll(name, "..", "")
+	if name == "" || name == "." {
+		name = "mount"
+	}
+	return name
 }
