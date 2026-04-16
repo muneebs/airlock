@@ -89,7 +89,7 @@ func (lc *LimaController) Unlock(ctx context.Context, sandboxName string) error 
 // embedded directly in a printf or echo command. Even if NetworkPolicy gains
 // string fields in the future, the heredoc content is treated as literal text.
 func (lc *LimaController) ApplyPolicy(ctx context.Context, sandboxName string, policy api.NetworkPolicy) error {
-	ruleset := buildOutputRules(policy)
+	ruleset := BuildOutputRules(policy)
 	cmd := fmt.Sprintf("sudo iptables-restore <<'AIRLOCK_EOF'\n%sAIRLOCK_EOF", ruleset)
 
 	if err := lc.runCmd(ctx, sandboxName, cmd); err != nil {
@@ -103,10 +103,10 @@ func (lc *LimaController) ApplyPolicy(ctx context.Context, sandboxName string, p
 	return nil
 }
 
-// buildOutputRules constructs an iptables-restore format ruleset for the
+// BuildOutputRules constructs an iptables-restore format ruleset for the
 // OUTPUT chain based on the given policy. The ruleset replaces the OUTPUT
 // chain atomically — either all rules apply or none do.
-func buildOutputRules(policy api.NetworkPolicy) string {
+func BuildOutputRules(policy api.NetworkPolicy) string {
 	var rules strings.Builder
 
 	rules.WriteString("*filter\n")

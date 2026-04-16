@@ -256,5 +256,11 @@ func CheckResourcesForSpec(spec api.SandboxSpec) []sysutil.Insufficiency {
 	return issues
 }
 
+// SetCheckResources overrides the resource checker. Tests use this to
+// bypass resource checks that would fail in constrained environments.
+func (m *Manager) SetCheckResources(fn ResourceChecker) {
+	m.checkRes = fn
+}
+
 // Verify Manager implements api.SandboxManager at compile time.
 var _ api.SandboxManager = (*Manager)(nil)
