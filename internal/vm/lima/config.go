@@ -6,10 +6,13 @@ package lima
 
 import (
 	"fmt"
+	"path/filepath"
+	"regexp"
+	"strings"
+
 	"github.com/muneebs/airlock/internal/api"
 	"gopkg.in/yaml.v3"
 	"strconv"
-	"strings"
 )
 
 // LimaConfig represents the Lima YAML configuration file format.
@@ -130,9 +133,14 @@ func parsePortRange(s string) (LimaPortForward, error) {
 	}, nil
 }
 
+var safePathRe = regexp.MustCompile(`^[a-zA-Z0-9_./-]+$`)
+
 func validateSpec(spec api.VMSpec) error {
 	if spec.Name == "" {
 		return fmt.Errorf("name is required")
+	}
+	if err := validateName(spec.Name); err != nil {
+		return fmt.Errorf("invalid name: %w", err)
 	}
 	if spec.CPU < 1 {
 		return fmt.Errorf("cpu must be >= 1, got %d", spec.CPU)
@@ -146,6 +154,21 @@ func validateSpec(spec api.VMSpec) error {
 	for _, m := range spec.Mounts {
 		if m.HostPath == "" {
 			return fmt.Errorf("mount host_path is required")
+		}
+		cleaned := filepath.Clean(m.HostPath)
+		if !safePathRe.MatchString(cleaned) {
+			return fmt.Errorf("mount host_path %q contains invalid characters", m.HostPath)
+		}
+		if strings.Contains(m.HostPath, "..") {
+			return fmt.Errorf("mount host_path %q must not contain ..", m.HostPath)
+		}
+	}
+	if len(spec.ProvisionCmds) > 10 {
+		return fmt.Errorf("too many provision commands (max 10, got %d)", len(spec.ProvisionCmds))
+	}
+	for i, cmd := range spec.ProvisionCmds {
+		if len(cmd) > 4096 {
+			return fmt.Errorf("provision command %d exceeds max length of 4096", i)
 		}
 	}
 	return nil

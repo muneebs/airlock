@@ -117,6 +117,48 @@ func TestGenerateConfigValidationNoName(t *testing.T) {
 	}
 }
 
+func TestGenerateConfigValidationPathTraversal(t *testing.T) {
+	spec := api.VMSpec{Name: "../../etc", CPU: 2, Memory: "4GiB", Disk: "20GiB"}
+	_, err := GenerateConfig(spec)
+	if err == nil {
+		t.Error("expected error for path traversal in name")
+	}
+}
+
+func TestGenerateConfigValidationHostPathTraversal(t *testing.T) {
+	spec := api.VMSpec{
+		Name:   "test-vm",
+		CPU:    2,
+		Memory: "4GiB",
+		Disk:   "20GiB",
+		Mounts: []api.VMMount{
+			{HostPath: "/etc/../root", GuestPath: "/mnt"},
+		},
+	}
+	_, err := GenerateConfig(spec)
+	if err == nil {
+		t.Error("expected error for .. in mount host_path")
+	}
+}
+
+func TestGenerateConfigValidationProvisionCmdsLimit(t *testing.T) {
+	cmds := make([]string, 11)
+	for i := range cmds {
+		cmds[i] = "echo hello"
+	}
+	spec := api.VMSpec{
+		Name:          "test-vm",
+		CPU:           2,
+		Memory:        "4GiB",
+		Disk:          "20GiB",
+		ProvisionCmds: cmds,
+	}
+	_, err := GenerateConfig(spec)
+	if err == nil {
+		t.Error("expected error for too many provision commands")
+	}
+}
+
 func TestGenerateConfigValidationZeroCPU(t *testing.T) {
 	spec := api.VMSpec{Name: "test", CPU: 0, Memory: "4GiB", Disk: "20GiB"}
 	_, err := GenerateConfig(spec)

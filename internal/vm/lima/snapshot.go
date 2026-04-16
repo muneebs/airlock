@@ -15,6 +15,9 @@ import (
 // excluding runtime files like sockets. This allows airlock reset to
 // restore the VM to a clean state without re-provisioning.
 func (p *LimaProvider) SnapshotClean(ctx context.Context, name string) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("invalid vm name: %w", err)
+	}
 	vmDir := filepath.Join(p.limaDir, name)
 	cleanDir := filepath.Join(p.limaDir, name+"-clean")
 
@@ -69,6 +72,9 @@ func (p *LimaProvider) SnapshotClean(ctx context.Context, name string) error {
 // RestoreClean copies the -clean baseline back over the VM directory,
 // restoring it to a freshly-provisioned state. The VM must be stopped.
 func (p *LimaProvider) RestoreClean(ctx context.Context, name string) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("invalid vm name: %w", err)
+	}
 	cleanDir := filepath.Join(p.limaDir, name+"-clean")
 	vmDir := filepath.Join(p.limaDir, name)
 
@@ -85,6 +91,9 @@ func (p *LimaProvider) RestoreClean(ctx context.Context, name string) error {
 
 // HasCleanSnapshot checks whether a -clean baseline exists for the VM.
 func (p *LimaProvider) HasCleanSnapshot(name string) bool {
+	if err := validateName(name); err != nil {
+		return false
+	}
 	cleanDir := filepath.Join(p.limaDir, name+"-clean")
 	_, err := os.Stat(cleanDir)
 	return err == nil
@@ -93,6 +102,9 @@ func (p *LimaProvider) HasCleanSnapshot(name string) bool {
 // ProvisionVM runs the standard provision commands for a fresh VM.
 // This installs Node.js, pnpm, bun, Docker, and creates the airlock user.
 func (p *LimaProvider) ProvisionVM(ctx context.Context, name string, nodeVersion int) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("invalid vm name: %w", err)
+	}
 	if nodeVersion <= 0 {
 		nodeVersion = 22
 	}

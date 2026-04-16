@@ -46,6 +46,9 @@ func NewLimaProviderWithPaths(limactlPath, limaDir string) *LimaProvider {
 
 // Create generates a Lima YAML config from the VMSpec and runs limactl create.
 func (p *LimaProvider) Create(ctx context.Context, spec api.VMSpec) error {
+	if err := validateName(spec.Name); err != nil {
+		return fmt.Errorf("invalid vm name: %w", err)
+	}
 	configYAML, err := GenerateConfig(spec)
 	if err != nil {
 		return fmt.Errorf("generate lima config: %w", err)
@@ -71,6 +74,9 @@ func (p *LimaProvider) Create(ctx context.Context, spec api.VMSpec) error {
 
 // Start starts an existing Lima VM.
 func (p *LimaProvider) Start(ctx context.Context, name string) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("invalid vm name: %w", err)
+	}
 	_, err := p.runCmd(ctx, "start", name)
 	if err != nil {
 		return fmt.Errorf("limactl start %s: %w", name, err)
@@ -80,6 +86,9 @@ func (p *LimaProvider) Start(ctx context.Context, name string) error {
 
 // Stop stops a running Lima VM.
 func (p *LimaProvider) Stop(ctx context.Context, name string) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("invalid vm name: %w", err)
+	}
 	_, err := p.runCmd(ctx, "stop", name)
 	if err != nil {
 		return fmt.Errorf("limactl stop %s: %w", name, err)
@@ -89,6 +98,9 @@ func (p *LimaProvider) Stop(ctx context.Context, name string) error {
 
 // Delete removes a Lima VM.
 func (p *LimaProvider) Delete(ctx context.Context, name string) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("invalid vm name: %w", err)
+	}
 	_, err := p.runCmd(ctx, "delete", name)
 	if err != nil {
 		return fmt.Errorf("limactl delete %s: %w", name, err)
@@ -98,6 +110,9 @@ func (p *LimaProvider) Delete(ctx context.Context, name string) error {
 
 // Exists checks whether a Lima VM with the given name exists.
 func (p *LimaProvider) Exists(ctx context.Context, name string) (bool, error) {
+	if err := validateName(name); err != nil {
+		return false, fmt.Errorf("invalid vm name: %w", err)
+	}
 	vms, err := p.listVMs(ctx)
 	if err != nil {
 		return false, err
@@ -112,6 +127,9 @@ func (p *LimaProvider) Exists(ctx context.Context, name string) (bool, error) {
 
 // IsRunning checks whether a Lima VM is currently running.
 func (p *LimaProvider) IsRunning(ctx context.Context, name string) (bool, error) {
+	if err := validateName(name); err != nil {
+		return false, fmt.Errorf("invalid vm name: %w", err)
+	}
 	vms, err := p.listVMs(ctx)
 	if err != nil {
 		return false, err
@@ -126,6 +144,9 @@ func (p *LimaProvider) IsRunning(ctx context.Context, name string) (bool, error)
 
 // Exec runs a command inside the Lima VM as root.
 func (p *LimaProvider) Exec(ctx context.Context, name string, cmd []string) (string, error) {
+	if err := validateName(name); err != nil {
+		return "", fmt.Errorf("invalid vm name: %w", err)
+	}
 	args := []string{"shell", "--workdir", "/", name, "--"}
 	args = append(args, cmd...)
 	return p.runCmd(ctx, args...)
@@ -133,6 +154,9 @@ func (p *LimaProvider) Exec(ctx context.Context, name string, cmd []string) (str
 
 // ExecAsUser runs a command inside the Lima VM as a specific user.
 func (p *LimaProvider) ExecAsUser(ctx context.Context, name, user string, cmd []string) (string, error) {
+	if err := validateUsername(user); err != nil {
+		return "", fmt.Errorf("invalid user: %w", err)
+	}
 	shellCmd := fmt.Sprintf("sudo -u %s bash --login -c '%s'", user, shellEscape(strings.Join(cmd, " ")))
 	args := []string{"shell", "--workdir", "/", name, "--", "bash", "-c", shellCmd}
 	return p.runCmd(ctx, args...)
@@ -140,6 +164,9 @@ func (p *LimaProvider) ExecAsUser(ctx context.Context, name, user string, cmd []
 
 // CopyToVM copies a file from the host into the Lima VM.
 func (p *LimaProvider) CopyToVM(ctx context.Context, name, src, dst string) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("invalid vm name: %w", err)
+	}
 	target := fmt.Sprintf("%s:%s", name, dst)
 	_, err := p.runCmd(ctx, "copy", src, target)
 	if err != nil {
