@@ -37,7 +37,7 @@ type Manager struct {
 	provider  api.Provider
 	resetter  Resetter
 	detector  *detect.CompositeDetector
-	profiles  *profile.Registry
+	profiles  api.ProfileRegistry
 	mounts    api.MountManager
 	network   api.NetworkController
 	storePath string
@@ -52,7 +52,7 @@ func NewManager(
 	provider api.Provider,
 	resetter Resetter,
 	detector *detect.CompositeDetector,
-	profiles *profile.Registry,
+	profiles api.ProfileRegistry,
 	mounts api.MountManager,
 	network api.NetworkController,
 	storePath string,

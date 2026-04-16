@@ -158,6 +158,9 @@ func (f *fakeNetworkController) IsLocked(_ context.Context, sandboxName string) 
 	return len(f.locked) > len(f.unlocked), nil
 }
 
+func (f *fakeNetworkController) RemovePolicy(sandboxName string) {
+}
+
 func newTestManager(t *testing.T) (*Manager, *fakeProvider, *fakeResetter, *fakeMountManager, *fakeNetworkController) {
 	t.Helper()
 	dir := t.TempDir()
@@ -746,15 +749,17 @@ func TestSandboxStateFromVM(t *testing.T) {
 }
 
 func TestCheckResourcesForSpec(t *testing.T) {
-	spec := api.SandboxSpec{
+	excessiveSpec := api.SandboxSpec{
 		Name:   "resource-test",
-		CPU:    intPtr(2),
-		Memory: "4GiB",
-		Disk:   "20GiB",
+		CPU:    intPtr(9999),
+		Memory: "9999GiB",
+		Disk:   "9999GiB",
 	}
 
-	issues := CheckResourcesForSpec(spec)
-	_ = issues
+	issues := CheckResourcesForSpec(excessiveSpec)
+	if len(issues) == 0 {
+		t.Error("expected resource issues for excessive spec, got none")
+	}
 }
 
 func TestErrNotFound(t *testing.T) {

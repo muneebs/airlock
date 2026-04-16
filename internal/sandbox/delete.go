@@ -40,6 +40,8 @@ func (m *Manager) Destroy(ctx context.Context, name string) error {
 		_ = m.mounts.Unregister(ctx, name, mt.Name)
 	}
 
+	m.network.RemovePolicy(name)
+
 	m.mu.Lock()
 	_ = m.remove(name)
 	m.mu.Unlock()

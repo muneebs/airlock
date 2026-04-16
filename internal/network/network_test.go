@@ -255,3 +255,31 @@ func TestApplyPolicyErrorPropagates(t *testing.T) {
 		t.Error("policy should not be recorded after failed apply")
 	}
 }
+
+func TestRemovePolicy(t *testing.T) {
+	runCmd, _ := fakeRunCmd(t)
+	lc := NewLimaControllerWithRunners(runCmd, fakeRunOutput(false))
+
+	lc.Lock(context.Background(), "sandbox-a")
+	lc.Unlock(context.Background(), "sandbox-b")
+
+	_, appliedA := lc.CurrentPolicy("sandbox-a")
+	if !appliedA {
+		t.Error("expected policy for sandbox-a after Lock()")
+	}
+	_, appliedB := lc.CurrentPolicy("sandbox-b")
+	if !appliedB {
+		t.Error("expected policy for sandbox-b after Unlock()")
+	}
+
+	lc.RemovePolicy("sandbox-a")
+	_, appliedA = lc.CurrentPolicy("sandbox-a")
+	if appliedA {
+		t.Error("expected no policy for sandbox-a after RemovePolicy()")
+	}
+
+	_, appliedB = lc.CurrentPolicy("sandbox-b")
+	if !appliedB {
+		t.Error("sandbox-b policy should be unaffected by removing sandbox-a")
+	}
+}

@@ -154,6 +154,14 @@ func (lc *LimaController) CurrentPolicy(sandboxName string) (api.NetworkPolicy, 
 	return policy, ok
 }
 
+// RemovePolicy removes the tracked policy for a sandbox from memory.
+// This should be called when a sandbox is destroyed to prevent memory leaks.
+func (lc *LimaController) RemovePolicy(sandboxName string) {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	delete(lc.policies, sandboxName)
+}
+
 // limactlRunExec executes a command inside a Lima VM via limactl shell.
 func limactlRunExec(ctx context.Context, vmName, cmd string) error {
 	limactl, err := exec.LookPath("limactl")

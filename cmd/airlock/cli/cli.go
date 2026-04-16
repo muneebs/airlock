@@ -35,7 +35,7 @@ type Dependencies struct {
 	Sheller     api.ShellProvider
 	Mounts      api.MountManager
 	Network     api.NetworkController
-	Profiles    *profile.Registry
+	Profiles    api.ProfileRegistry
 	ConfigDir   string
 	IsTTY       bool
 }
@@ -416,6 +416,10 @@ func newRemoveCmd(deps *Dependencies) *cobra.Command {
 				ctx = context.Background()
 			}
 
+			if sandboxName == "" {
+				return fmt.Errorf("--sandbox flag is required")
+			}
+
 			mountName := args[0]
 			if err := deps.Mounts.Unregister(ctx, sandboxName, mountName); err != nil {
 				return fmt.Errorf("unmount %q: %w", mountName, err)
@@ -427,6 +431,7 @@ func newRemoveCmd(deps *Dependencies) *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&sandboxName, "sandbox", "s", "", "Sandbox name (required for multi-sandbox setups)")
+	cmd.MarkFlagRequired("sandbox")
 
 	return cmd
 }
@@ -631,16 +636,17 @@ or --format=yaml output.`,
 					return fmt.Errorf("serialize toml: %w", err)
 				}
 				fmt.Fprint(cmd.OutOrStdout(), string(data))
+				return nil
 			case "yaml":
 				data, err := config.WriteYAML(cfg)
 				if err != nil {
 					return fmt.Errorf("serialize yaml: %w", err)
 				}
 				fmt.Fprint(cmd.OutOrStdout(), string(data))
+				return nil
 			default:
 				return fmt.Errorf("unknown format %q (valid: json, toml, yaml)", showFormat)
 			}
-			return nil
 		},
 	}
 
@@ -658,7 +664,10 @@ func newProfileCmd(deps *Dependencies) *cobra.Command {
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "PROFILE\tDESCRIPTION")
 			for _, name := range names {
-				p, _ := deps.Profiles.Get(name)
+				p, err := deps.Profiles.Get(name)
+				if err != nil {
+					continue
+				}
 				fmt.Fprintf(w, "%s\t%s\n", p.Name, p.Description)
 			}
 			return w.Flush()
