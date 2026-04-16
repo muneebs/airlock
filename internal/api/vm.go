@@ -17,6 +17,21 @@ type Provider interface {
 	CopyToVM(ctx context.Context, name, src, dst string) error
 }
 
+// Provisioner handles VM provisioning and snapshot management for setup/reset.
+// This is a separate interface from Provider following the Interface Segregation
+// Principle — not every Provider can provision VMs or take snapshots.
+type Provisioner interface {
+	ProvisionVM(ctx context.Context, name string, nodeVersion int) error
+	SnapshotClean(ctx context.Context, name string) error
+	HasCleanSnapshot(name string) bool
+}
+
+// ShellProvider provides interactive shell access to a VM. This is a separate
+// interface because not all providers support interactive TTY access.
+type ShellProvider interface {
+	Shell(name string) error
+}
+
 // VMSpec describes a virtual machine to create.
 type VMSpec struct {
 	Name   string    `json:"name" yaml:"name"`

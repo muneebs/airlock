@@ -111,6 +111,12 @@ func (s *JSONStore) Count() int {
 	return len(s.mounts)
 }
 
+// Apply is a no-op for the JSON store. Mount application happens at the VM
+// provider level when the VM is created or started.
+func (s *JSONStore) Apply(_ context.Context, sandboxName string) error {
+	return nil
+}
+
 func (s *JSONStore) resolveName(base, hostPath string) string {
 	for _, m := range s.mounts {
 		if m.HostPath == hostPath {

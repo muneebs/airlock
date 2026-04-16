@@ -30,14 +30,14 @@ func fakeRunOutput(locked bool) OutputRunner {
 
 func TestLockAppliesCorrectPolicy(t *testing.T) {
 	runCmd, cmds := fakeRunCmd(t)
-	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
+	lc := NewLimaControllerWithRunners(runCmd, fakeRunOutput(false))
 
 	err := lc.Lock(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("Lock() error: %v", err)
 	}
 
-	policy, applied := lc.CurrentPolicy()
+	policy, applied := lc.CurrentPolicy("test")
 	if !applied {
 		t.Fatal("expected policy to be applied after Lock()")
 	}
@@ -66,14 +66,14 @@ func TestLockAppliesCorrectPolicy(t *testing.T) {
 
 func TestUnlockAppliesCorrectPolicy(t *testing.T) {
 	runCmd, cmds := fakeRunCmd(t)
-	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
+	lc := NewLimaControllerWithRunners(runCmd, fakeRunOutput(false))
 
 	err := lc.Unlock(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("Unlock() error: %v", err)
 	}
 
-	policy, applied := lc.CurrentPolicy()
+	policy, applied := lc.CurrentPolicy("test")
 	if !applied {
 		t.Fatal("expected policy to be applied after Unlock()")
 	}
@@ -99,7 +99,7 @@ func TestUnlockAppliesCorrectPolicy(t *testing.T) {
 
 func TestApplyPolicyCautious(t *testing.T) {
 	runCmd, _ := fakeRunCmd(t)
-	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
+	lc := NewLimaControllerWithRunners(runCmd, fakeRunOutput(false))
 
 	policy := api.NetworkPolicy{
 		AllowDNS:         true,
@@ -113,7 +113,7 @@ func TestApplyPolicyCautious(t *testing.T) {
 		t.Fatalf("ApplyPolicy() error: %v", err)
 	}
 
-	got, applied := lc.CurrentPolicy()
+	got, applied := lc.CurrentPolicy("test")
 	if !applied {
 		t.Fatal("expected policy to be applied")
 	}
@@ -137,16 +137,16 @@ func TestApplyPolicyCautious(t *testing.T) {
 }
 
 func TestNewLimaController(t *testing.T) {
-	lc := NewLimaController("my-vm")
-	if lc.vmName != "my-vm" {
-		t.Errorf("expected vmName my-vm, got %s", lc.vmName)
+	lc := NewLimaController()
+	if lc == nil {
+		t.Error("expected non-nil controller")
 	}
 }
 
 func TestCurrentPolicyBeforeApply(t *testing.T) {
 	runCmd, _ := fakeRunCmd(t)
-	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
-	_, applied := lc.CurrentPolicy()
+	lc := NewLimaControllerWithRunners(runCmd, fakeRunOutput(false))
+	_, applied := lc.CurrentPolicy("test")
 	if applied {
 		t.Error("expected no policy applied on new controller")
 	}
@@ -154,7 +154,7 @@ func TestCurrentPolicyBeforeApply(t *testing.T) {
 
 func TestLockRulesetContent(t *testing.T) {
 	runCmd, cmds := fakeRunCmd(t)
-	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
+	lc := NewLimaControllerWithRunners(runCmd, fakeRunOutput(false))
 
 	lc.Lock(context.Background(), "test")
 
@@ -181,7 +181,7 @@ func TestLockRulesetContent(t *testing.T) {
 
 func TestUnlockRulesetContent(t *testing.T) {
 	runCmd, cmds := fakeRunCmd(t)
-	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
+	lc := NewLimaControllerWithRunners(runCmd, fakeRunOutput(false))
 
 	lc.Unlock(context.Background(), "test")
 
@@ -240,7 +240,7 @@ func TestApplyPolicyErrorPropagates(t *testing.T) {
 	failCmd := func(_ context.Context, _, _ string) error {
 		return fmt.Errorf("permission denied")
 	}
-	lc := NewLimaControllerWithRunners("test-vm", failCmd, fakeRunOutput(false))
+	lc := NewLimaControllerWithRunners(failCmd, fakeRunOutput(false))
 
 	err := lc.Lock(context.Background(), "test")
 	if err == nil {
@@ -250,7 +250,7 @@ func TestApplyPolicyErrorPropagates(t *testing.T) {
 		t.Errorf("expected wrapped error, got: %v", err)
 	}
 
-	_, applied := lc.CurrentPolicy()
+	_, applied := lc.CurrentPolicy("test")
 	if applied {
 		t.Error("policy should not be recorded after failed apply")
 	}

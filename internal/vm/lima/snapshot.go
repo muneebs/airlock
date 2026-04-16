@@ -214,3 +214,9 @@ func copyDir(src, dst string) error {
 
 // Verify LimaProvider implements api.Provider at compile time.
 var _ api.Provider = (*LimaProvider)(nil)
+
+// Verify LimaProvider implements api.Provisioner at compile time.
+var _ api.Provisioner = (*LimaProvider)(nil)
+
+// Verify LimaProvider implements api.ShellProvider at compile time.
+var _ api.ShellProvider = (*LimaProvider)(nil)

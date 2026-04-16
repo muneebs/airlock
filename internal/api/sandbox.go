@@ -37,7 +37,9 @@ type SandboxInfo struct {
 type SandboxManager interface {
 	Create(ctx context.Context, spec SandboxSpec) (SandboxInfo, error)
 	Start(ctx context.Context, name string) error
+	Run(ctx context.Context, name string, command []string) (string, error)
 	Stop(ctx context.Context, name string) error
+	Reset(ctx context.Context, name string) error
 	Destroy(ctx context.Context, name string) error
 	Status(ctx context.Context, name string) (SandboxInfo, error)
 	List(ctx context.Context) ([]SandboxInfo, error)
