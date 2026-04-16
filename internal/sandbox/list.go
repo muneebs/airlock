@@ -58,13 +58,15 @@ func (m *Manager) Status(ctx context.Context, name string) (api.SandboxInfo, err
 	}
 
 	if running && info.State != api.StateRunning {
-		info.State = api.StateRunning
 		m.mu.Lock()
+		info, _ = m.get(name)
+		info.State = api.StateRunning
 		_ = m.put(info)
 		m.mu.Unlock()
 	} else if !running && info.State == api.StateRunning {
-		info.State = api.StateStopped
 		m.mu.Lock()
+		info, _ = m.get(name)
+		info.State = api.StateStopped
 		_ = m.put(info)
 		m.mu.Unlock()
 	}

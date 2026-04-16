@@ -13,7 +13,7 @@ import (
 // otherwise the detected runtime's run command is used.
 func (m *Manager) Run(ctx context.Context, name string, command []string) (string, error) {
 	m.mu.Lock()
-	info, err := m.get(name)
+	_, err := m.get(name)
 	m.mu.Unlock()
 	if err != nil {
 		return "", err
@@ -29,8 +29,14 @@ func (m *Manager) Run(ctx context.Context, name string, command []string) (strin
 			return "", fmt.Errorf("start VM: %w", err)
 		}
 		m.mu.Lock()
-		info.State = api.StateRunning
-		_ = m.put(info)
+		info, _ := m.get(name)
+		if info != nil && info.State != api.StateRunning {
+			info.State = api.StateRunning
+			if putErr := m.put(info); putErr != nil {
+				m.mu.Unlock()
+				return "", fmt.Errorf("save sandbox state: %w", putErr)
+			}
+		}
 		m.mu.Unlock()
 	}
 
@@ -49,7 +55,7 @@ func (m *Manager) Run(ctx context.Context, name string, command []string) (strin
 // Start starts a stopped sandbox.
 func (m *Manager) Start(ctx context.Context, name string) error {
 	m.mu.Lock()
-	info, err := m.get(name)
+	_, err := m.get(name)
 	m.mu.Unlock()
 	if err != nil {
 		return err
@@ -69,8 +75,14 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	}
 
 	m.mu.Lock()
-	info.State = api.StateRunning
-	_ = m.put(info)
+	info, _ := m.get(name)
+	if info != nil && info.State != api.StateRunning {
+		info.State = api.StateRunning
+		if putErr := m.put(info); putErr != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("save sandbox state: %w", putErr)
+		}
+	}
 	m.mu.Unlock()
 
 	return nil
