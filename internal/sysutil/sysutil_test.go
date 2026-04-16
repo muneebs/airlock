@@ -9,13 +9,21 @@ func TestParseMemoryString(t *testing.T) {
 		input    string
 		expected int64
 	}{
+		// IEC (binary) units: 1024-based
 		{"4GiB", 4 * 1024 * 1024 * 1024},
 		{"2048MiB", 2048 * 1024 * 1024},
 		{"8GiB", 8 * 1024 * 1024 * 1024},
-		{"1GB", 1024 * 1024 * 1024},
+		{"1KiB", 1024},
+		// SI (decimal) units: 1000-based
+		{"1GB", 1000 * 1000 * 1000},
+		{"1MB", 1000 * 1000},
+		{"1KB", 1000},
+		// Bare numbers
 		{"4096", 4096},
+		// Bare letters: IEC (binary) for backward compatibility
 		{"2G", 2 * 1024 * 1024 * 1024},
 		{"512M", 512 * 1024 * 1024},
+		// Edge cases
 		{"", 0},
 		{"invalid", 0},
 	}

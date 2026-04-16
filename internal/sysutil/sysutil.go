@@ -98,16 +98,19 @@ func parseMemoryString(s string) int64 {
 	}
 	s = strings.TrimSpace(s)
 
+	// IEC (binary) units: 1024-based
 	multipliers := map[string]int64{
 		"GiB": 1024 * 1024 * 1024,
 		"MiB": 1024 * 1024,
 		"KiB": 1024,
-		"GB":  1024 * 1024 * 1024,
-		"MB":  1024 * 1024,
-		"KB":  1024,
-		"G":   1024 * 1024 * 1024,
-		"M":   1024 * 1024,
-		"K":   1024,
+		// SI (decimal) units: 1000-based
+		"GB": 1000 * 1000 * 1000,
+		"MB": 1000 * 1000,
+		"KB": 1000,
+		// Bare letters: treat as IEC (binary) for backward compatibility
+		"G": 1024 * 1024 * 1024,
+		"M": 1024 * 1024,
+		"K": 1024,
 	}
 
 	for suffix, mult := range multipliers {

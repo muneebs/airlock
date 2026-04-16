@@ -197,7 +197,7 @@ func (p *pythonDetector) Detect(dir string) (api.DetectedRuntime, error) {
 	}
 
 	if hasPyproject {
-		runtime.RunCmd = "python -m ."
+		runtime.RunCmd = ""
 	} else {
 		mainPy := filepath.Join(dir, "main.py")
 		if _, err := os.Stat(mainPy); err == nil {

@@ -675,15 +675,18 @@ cmd_claude() {
         yellow "Your Claude credentials will be copied into the airlock."
         yellow "Any code running in the sandbox VM will be able to read them."
         yellow "If you do not trust the project code, skip this step."
+        _skip_claude_creds=1
         if [ -t 0 ]; then
             printf "%s" "Copy credentials? [y/N] " >&2
             read -r _confirm
             case "$_confirm" in
-                [yY]|[yY][eE][sS]) ;;
-                *) dim "Skipping credential copy. You'll need to authenticate inside the airlock."; _skip_claude_creds=1 ;;
+                [yY]|[yY][eE][sS]) _skip_claude_creds=0 ;;
+                *) dim "Skipping credential copy. You'll need to authenticate inside the airlock." ;;
             esac
+        else
+            dim "Non-interactive session: skipping credential copy. Set --copy-creds or run interactively to enable."
         fi
-        if [ "${_skip_claude_creds:-0}" -eq 0 ]; then
+        if [ "$_skip_claude_creds" -eq 0 ]; then
             blue "Copying Claude auth config into airlock..."
             local staging="/tmp/claude-config-staging"
             run_in_vm sudo rm -rf "$staging" "$AIRLOCK_HOME/.claude"

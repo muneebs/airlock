@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/muneebs/airlock/internal/api"
 )
@@ -14,7 +15,10 @@ import (
 // LimaController manages network isolation by executing iptables commands
 // inside a Lima VM via limactl. It implements api.NetworkController.
 type LimaController struct {
-	vmName string
+	vmName  string
+	mu      sync.Mutex
+	policy  api.NetworkPolicy
+	applied bool
 }
 
 // NewLimaController creates a network controller for the given VM name.
@@ -44,6 +48,9 @@ func (lc *LimaController) Unlock(ctx context.Context, sandboxName string) error 
 }
 
 // ApplyPolicy applies a specific network policy using iptables rules.
+// It records the applied policy for inspection via CurrentPolicy().
+// LockAfterSetup in the policy is not consumed here — the sandbox orchestrator
+// reads it to decide whether to call Lock() after setup completes.
 func (lc *LimaController) ApplyPolicy(ctx context.Context, sandboxName string, policy api.NetworkPolicy) error {
 	vmName := lc.vmName
 
@@ -83,16 +90,39 @@ func (lc *LimaController) ApplyPolicy(ctx context.Context, sandboxName string, p
 		}
 	}
 
+	lc.mu.Lock()
+	lc.policy = policy
+	lc.applied = true
+	lc.mu.Unlock()
+
 	return nil
 }
 
-// IsLocked checks whether the network is currently locked by inspecting iptables rules.
+// IsLocked checks whether the network is currently locked.
+// It first checks the tracked policy state; if no policy has been applied,
+// it falls back to inspecting iptables rules in the VM.
 func (lc *LimaController) IsLocked(ctx context.Context, sandboxName string) (bool, error) {
+	lc.mu.Lock()
+	if lc.applied {
+		locked := !lc.policy.AllowOutbound
+		lc.mu.Unlock()
+		return locked, nil
+	}
+	lc.mu.Unlock()
+
 	output, err := limactlOutput(ctx, lc.vmName, "sudo iptables -L OUTPUT -n")
 	if err != nil {
 		return false, fmt.Errorf("check iptables: %w", err)
 	}
 	return strings.Contains(output, "DROP"), nil
+}
+
+// CurrentPolicy returns the last applied network policy, or false if none
+// has been applied yet.
+func (lc *LimaController) CurrentPolicy() (api.NetworkPolicy, bool) {
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	return lc.policy, lc.applied
 }
 
 // limactlRun executes a command inside a Lima VM.

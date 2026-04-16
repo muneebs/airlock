@@ -34,7 +34,8 @@ type VMSpec struct {
 
 // VMMount describes a host directory to mount inside the VM.
 type VMMount struct {
-	HostPath string `json:"host_path" yaml:"host_path"`
-	Writable bool   `json:"writable" yaml:"writable"`
-	Inotify  bool   `json:"inotify" yaml:"inotify"`
+	HostPath  string `json:"host_path" yaml:"host_path"`
+	GuestPath string `json:"guest_path" yaml:"guest_path"`
+	Writable  bool   `json:"writable" yaml:"writable"`
+	Inotify   bool   `json:"inotify" yaml:"inotify"`
 }

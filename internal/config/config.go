@@ -170,7 +170,7 @@ func mergeWithDefaults(cfg Config) Config {
 
 	for i := range cfg.Mounts {
 		if cfg.Mounts[i].Writable == nil {
-			w := true
+			w := false
 			cfg.Mounts[i].Writable = &w
 		}
 	}
@@ -206,6 +206,11 @@ func validate(cfg Config) error {
 		}
 		if strings.HasPrefix(m.Path, "/") {
 			return fmt.Errorf("mounts[].path must be relative, got: %s", m.Path)
+		}
+		for _, part := range strings.Split(m.Path, string(filepath.Separator)) {
+			if part == ".." {
+				return fmt.Errorf("mounts[].path must be relative and must not contain path traversal sequences, got: %s", m.Path)
+			}
 		}
 	}
 

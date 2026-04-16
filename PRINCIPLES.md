@@ -28,7 +28,7 @@ Airlock must respect the machine it runs on. Creating isolated environments is r
 
 ---
 
-## 3. Userability
+## 3. Usability
 
 Security must be accessible. The safest tool is the one people actually use.
 

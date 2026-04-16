@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -149,6 +150,33 @@ mounts:
 	}
 	if cfg.Mounts[0].Path != "./api" {
 		t.Errorf("expected mount path ./api, got %s", cfg.Mounts[0].Path)
+	}
+}
+
+func TestMountDefaultIsReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	tomlContent := `
+[[mounts]]
+path = "./data"
+`
+	err := os.WriteFile(filepath.Join(dir, "airlock.toml"), []byte(tomlContent), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if len(cfg.Mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(cfg.Mounts))
+	}
+	if cfg.Mounts[0].Writable == nil {
+		t.Fatal("expected Writable to be set by mergeWithDefaults, got nil")
+	}
+	if *cfg.Mounts[0].Writable {
+		t.Error("expected mount to default to read-only (writable=false)")
 	}
 }
 
@@ -315,6 +343,41 @@ path = ""
 	_, err = Load(dir)
 	if err == nil {
 		t.Fatal("expected validation error for empty mount path")
+	}
+}
+
+func TestValidatePathTraversalMount(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"dotdot prefix", "../etc/passwd", true},
+		{"dotdot mid", "foo/../../../etc/shadow", true},
+		{"dotdot trailing", "foo/bar/..", true},
+		{"dotdot segment only", "..", true},
+		{"valid relative", "./api", false},
+		{"valid nested", "foo/bar/baz", false},
+		{"valid dot", ".", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			dir := t.TempDir()
+			tomlContent := fmt.Sprintf("[[mounts]]\npath = %q\n", tt.path)
+			err := os.WriteFile(filepath.Join(dir, "airlock.toml"), []byte(tomlContent), 0644)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = Load(dir)
+			if tt.wantErr && err == nil {
+				t.Error("expected validation error for path traversal")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

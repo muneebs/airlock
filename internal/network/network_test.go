@@ -58,6 +58,66 @@ func TestNewLimaController(t *testing.T) {
 	}
 }
 
+func TestCurrentPolicyBeforeApply(t *testing.T) {
+	lc := NewLimaController("test-vm")
+	_, applied := lc.CurrentPolicy()
+	if applied {
+		t.Error("expected no policy applied on new controller")
+	}
+}
+
+func TestCurrentPolicyAfterApply(t *testing.T) {
+	lc := NewLimaController("test-vm")
+
+	// Simulate successful apply by setting state directly (limactlRun is stub)
+	lc.mu.Lock()
+	lc.policy = api.NetworkPolicy{AllowDNS: true, AllowOutbound: false}
+	lc.applied = true
+	lc.mu.Unlock()
+
+	policy, applied := lc.CurrentPolicy()
+	if !applied {
+		t.Error("expected policy to be applied")
+	}
+	if policy.AllowOutbound {
+		t.Error("expected locked policy")
+	}
+}
+
+func TestIsLockedUsesTrackedState(t *testing.T) {
+	lc := NewLimaController("test-vm")
+
+	lc.mu.Lock()
+	lc.policy = api.NetworkPolicy{AllowDNS: true, AllowOutbound: false}
+	lc.applied = true
+	lc.mu.Unlock()
+
+	locked, err := lc.IsLocked(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("IsLocked() error: %v", err)
+	}
+	if !locked {
+		t.Error("expected locked=true from tracked state")
+	}
+}
+
+func TestIsLockedUnlockedState(t *testing.T) {
+	lc := NewLimaController("test-vm")
+
+	lc.mu.Lock()
+	lc.policy = api.NetworkPolicy{AllowDNS: true, AllowOutbound: true}
+	lc.applied = true
+	lc.mu.Unlock()
+
+	locked, err := lc.IsLocked(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("IsLocked() error: %v", err)
+	}
+	if locked {
+		t.Error("expected locked=false from tracked state")
+	}
+}
+
 func TestCautiousProfilePolicy(t *testing.T) {
 	// The cautious profile: DNS allowed, outbound blocked, established allowed, lock after setup
 	policy := api.NetworkPolicy{
