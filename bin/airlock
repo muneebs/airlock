@@ -20,6 +20,7 @@ red()   { echo -e "\033[0;31m$1\033[0m"; }
 green() { echo -e "\033[0;32m$1\033[0m"; }
 blue()  { echo -e "\033[0;34m$1\033[0m"; }
 dim()   { echo -e "\033[0;90m$1\033[0m"; }
+yellow() { echo -e "\033[0;33m$1\033[0m"; }
 
 # ── Helpers ─────────────────────────────────────────────────────────
 die() { red "ERROR: $1" >&2; exit 1; }
@@ -191,6 +192,11 @@ load_project_config() {
         # Resolve relative paths to absolute
         local abs
         abs="$(cd "$dir" && cd "$rel" 2>/dev/null && pwd)" || die "Mount path '$rel' in $config does not exist."
+        # Prevent path traversal: mount must remain within the project directory
+        case "$abs/" in
+            "$dir/"*) ;;
+            *) die "Mount path '$rel' in $config resolves outside the project directory ($dir). This is blocked for security." ;;
+        esac
         local writable inotify
         writable="$(yq -p toml -oy ".mounts[$i].writable // true" "$config")"
         inotify="$(yq -p toml -oy ".mounts[$i].inotify // false" "$config")"
@@ -663,30 +669,48 @@ cmd_claude() {
     # without letting the airlock modify them.
     # Lima can't do per-mount read-only after initial config easily,
     # so we copy the auth config into the VM instead.
+    #
+    # WARNING: Any code running in the VM can read these credentials.
     if [ -d "$HOME/.claude" ]; then
-        blue "Copying Claude auth config into airlock..."
-        local staging="/tmp/claude-config-staging"
-        run_in_vm sudo rm -rf "$staging" "$AIRLOCK_HOME/.claude"
-        run_in_vm sudo mkdir -p "$staging"
-        run_in_vm sudo chmod 777 "$staging"
-
-        # Copy only auth-related files, not settings that might override behavior
-        for f in credentials.json .credentials; do
-            if [ -f "$HOME/.claude/$f" ]; then
-                limactl copy "$HOME/.claude/$f" "${AIRLOCK_NAME}:${staging}/$f"
-            fi
-        done
-
-        # Copy the whole dir if individual files don't exist (auth format may vary)
-        if [ ! -f "$HOME/.claude/credentials.json" ] && [ ! -f "$HOME/.claude/.credentials" ]; then
-            # Fall back to copying everything — claude stores auth in various places
-            for f in "$HOME/.claude"/*; do
-                [ -f "$f" ] && limactl copy "$f" "${AIRLOCK_NAME}:${staging}/$(basename "$f")" 2>/dev/null || true
-            done
+        yellow "Your Claude credentials will be copied into the airlock."
+        yellow "Any code running in the sandbox VM will be able to read them."
+        yellow "If you do not trust the project code, skip this step."
+        _skip_claude_creds=1
+        if [ -t 0 ]; then
+            printf "%s" "Copy credentials? [y/N] " >&2
+            read -r _confirm
+            case "$_confirm" in
+                [yY]|[yY][eE][sS]) _skip_claude_creds=0 ;;
+                *) dim "Skipping credential copy. You'll need to authenticate inside the airlock." ;;
+            esac
+        else
+            dim "Non-interactive session: skipping credential copy. Set --copy-creds or run interactively to enable."
         fi
+        if [ "$_skip_claude_creds" -eq 0 ]; then
+            blue "Copying Claude auth config into airlock..."
+            local staging="/tmp/claude-config-staging"
+            run_in_vm sudo rm -rf "$staging" "$AIRLOCK_HOME/.claude"
+            run_in_vm sudo mkdir -p "$staging"
+            run_in_vm sudo chmod 777 "$staging"
 
-        run_in_vm sudo mv "$staging" "$AIRLOCK_HOME/.claude"
-        run_in_vm sudo chown -R "$AIRLOCK_USER:$AIRLOCK_USER" "$AIRLOCK_HOME/.claude"
+            # Copy only auth-related files, not settings that might override behavior
+            for f in credentials.json .credentials; do
+                if [ -f "$HOME/.claude/$f" ]; then
+                    limactl copy "$HOME/.claude/$f" "${AIRLOCK_NAME}:${staging}/$f"
+                fi
+            done
+
+            # Copy the whole dir if individual files don't exist (auth format may vary)
+            if [ ! -f "$HOME/.claude/credentials.json" ] && [ ! -f "$HOME/.claude/.credentials" ]; then
+                # Fall back to copying everything — claude stores auth in various places
+                for f in "$HOME/.claude"/*; do
+                    [ -f "$f" ] && limactl copy "$f" "${AIRLOCK_NAME}:${staging}/$(basename "$f")" 2>/dev/null || true
+                done
+            fi
+
+            run_in_vm sudo mv "$staging" "$AIRLOCK_HOME/.claude"
+            run_in_vm sudo chown -R "$AIRLOCK_USER:$AIRLOCK_USER" "$AIRLOCK_HOME/.claude"
+        fi
     else
         dim "  No ~/.claude config found. You'll need to authenticate inside the airlock."
     fi
@@ -694,7 +718,9 @@ cmd_claude() {
     # Also set ANTHROPIC_API_KEY if it's in the host environment
     local api_key_env=""
     if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-        api_key_env="export ANTHROPIC_API_KEY='$ANTHROPIC_API_KEY' && "
+        local escaped_key
+        escaped_key="$(printf '%s' "$ANTHROPIC_API_KEY" | sed "s/'/'\\\\''/g")"
+        api_key_env="export ANTHROPIC_API_KEY='$escaped_key' && "
     fi
 
     echo ""
