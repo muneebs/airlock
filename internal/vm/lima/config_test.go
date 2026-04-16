@@ -65,6 +65,12 @@ func TestGenerateConfigWithMounts(t *testing.T) {
 	if !strings.Contains(yaml, "mountInotify: true") {
 		t.Error("expected mountInotify: true for first mount")
 	}
+	if !strings.Contains(yaml, "mountPoint: /home/airlock/projects/project") {
+		t.Error("expected mountPoint for project mount")
+	}
+	if !strings.Contains(yaml, "mountPoint: /home/airlock/projects/api") {
+		t.Error("expected mountPoint for api mount")
+	}
 }
 
 func TestGenerateConfigWithPortForward(t *testing.T) {

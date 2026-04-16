@@ -61,11 +61,19 @@ func (p *LimaProvider) SnapshotClean(ctx context.Context, name string) error {
 			return nil
 		}
 
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(targetPath, data, 0644)
+		if err := os.WriteFile(targetPath, data, info.Mode()); err != nil {
+			return err
+		}
+		return os.Chmod(targetPath, info.Mode().Perm())
 	})
 }
 
@@ -182,11 +190,19 @@ func copyDir(src, dst string) error {
 			return nil
 		}
 
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(targetPath, data, 0644)
+		if err := os.WriteFile(targetPath, data, info.Mode()); err != nil {
+			return err
+		}
+		return os.Chmod(targetPath, info.Mode().Perm())
 	})
 }
 

@@ -37,6 +37,7 @@ type LimaImage struct {
 
 type LimaMount struct {
 	Location     string `yaml:"location"`
+	MountPoint   string `yaml:"mountPoint,omitempty"`
 	Writable     bool   `yaml:"writable"`
 	MountInotify bool   `yaml:"mountInotify,omitempty"`
 }
@@ -75,8 +76,9 @@ func GenerateConfig(spec api.VMSpec) (string, error) {
 
 	for _, m := range spec.Mounts {
 		lm := LimaMount{
-			Location: m.HostPath,
-			Writable: m.Writable,
+			Location:   m.HostPath,
+			MountPoint: m.GuestPath,
+			Writable:   m.Writable,
 		}
 		if m.Inotify {
 			lm.MountInotify = true
