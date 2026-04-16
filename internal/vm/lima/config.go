@@ -34,9 +34,12 @@ var sensitiveMountPaths = []string{
 	"/dev",
 }
 
-// dangerousShellChars matches characters that could enable shell injection
-// in provisioning commands. Allow only safe command-line characters.
-var dangerousShellChars = regexp.MustCompile(`[;&|$\x60!]`)
+// safeProvisionCmd matches provision commands that only contain safe characters.
+// Allowed: alphanumerics, space, hyphen, underscore, dot, slash, colon, equals,
+// tilde, at sign, plus, comma, hash (for comments). Newlines are allowed as
+// separators. Forbids shell metacharacters: ; & | $ ` \ " ' < > ( ) { } ! \r
+// and any control characters.
+var safeProvisionCmd = regexp.MustCompile(`^[a-zA-Z0-9 \t\n_./:~=+@#,-]+$`)
 
 // LimaConfig represents the Lima YAML configuration file format.
 type LimaConfig struct {
@@ -209,8 +212,8 @@ func validateSpec(spec api.VMSpec) error {
 		if len(cmd) > 4096 {
 			return fmt.Errorf("provision command %d exceeds max length of 4096", i)
 		}
-		if dangerousShellChars.MatchString(cmd) {
-			return fmt.Errorf("provision command %d contains disallowed shell metacharacters (;&|$`!): %q", i, cmd)
+		if !safeProvisionCmd.MatchString(cmd) {
+			return fmt.Errorf("provision command %d contains disallowed characters: only alphanumerics, spaces, hyphens, underscores, dots, slashes, colons, equals, tildes, plus, comma, hash, and @ are permitted: %q", i, cmd)
 		}
 	}
 	return nil

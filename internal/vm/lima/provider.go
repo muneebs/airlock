@@ -222,7 +222,9 @@ func (p *LimaProvider) runCmd(ctx context.Context, args ...string) (string, erro
 	return stdout.String(), nil
 }
 
-// shellEscape wraps a string in single quotes, escaping internal single quotes.
+// shellEscape wraps a string in single quotes, replacing internal single quotes
+// with the standard '\” sequence, so the argument boundary is preserved when
+// passed to bash -c.
 func shellEscape(s string) string {
-	return strings.ReplaceAll(s, "'", "'\\''")
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
