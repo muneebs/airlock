@@ -96,8 +96,14 @@ inotify = true
 	if cfg.Mounts[0].Path != "./api" {
 		t.Errorf("expected mount path ./api, got %s", cfg.Mounts[0].Path)
 	}
+	if cfg.Mounts[0].Writable == nil {
+		t.Fatal("expected cfg.Mounts[0].Writable to be non-nil")
+	}
 	if *cfg.Mounts[0].Writable {
 		t.Error("expected first mount writable=false")
+	}
+	if cfg.Mounts[1].Writable == nil {
+		t.Fatal("expected cfg.Mounts[1].Writable to be non-nil")
 	}
 	if !*cfg.Mounts[1].Writable {
 		t.Error("expected second mount writable=true")

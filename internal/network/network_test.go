@@ -2,52 +2,137 @@ package network
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/muneebs/airlock/internal/api"
 )
 
-// NOTE: The LimaController currently has stub implementations for limactlRun
-// and limactlOutput. These tests verify the policy construction logic and
-// will be extended with integration tests once exec is wired up.
+// fakeRunCmd records all commands executed and returns nil (success).
+func fakeRunCmd(t *testing.T) (CommandRunner, *[]string) {
+	var cmds []string
+	return func(_ context.Context, _, cmd string) error {
+		cmds = append(cmds, cmd)
+		return nil
+	}, &cmds
+}
 
-func TestLockPolicy(t *testing.T) {
-	lc := NewLimaController("test-vm")
-
-	// Lock should set up a policy with DNS allowed, outbound blocked
-	policy := api.NetworkPolicy{
-		AllowDNS:         true,
-		AllowOutbound:    false,
-		AllowEstablished: false,
-	}
-
-	// Test that the policy is constructed correctly for lock
-	if !policy.AllowDNS {
-		t.Error("locked policy should allow DNS")
-	}
-	if policy.AllowOutbound {
-		t.Error("locked policy should block outbound")
-	}
-
-	// The actual limactl calls will fail because they're stubs
-	err := lc.ApplyPolicy(context.Background(), "test", policy)
-	if err == nil {
-		t.Error("expected error from stub limactlRun")
+// fakeRunOutput returns a fixed output simulating locked or unlocked iptables.
+func fakeRunOutput(locked bool) OutputRunner {
+	return func(_ context.Context, _, _ string) (string, error) {
+		if locked {
+			return "Chain OUTPUT (policy ACCEPT)\nDROP   all  --  anywhere  anywhere\n", nil
+		}
+		return "Chain OUTPUT (policy ACCEPT)\nACCEPT all  --  anywhere  anywhere\n", nil
 	}
 }
 
-func TestUnlockPolicy(t *testing.T) {
-	policy := api.NetworkPolicy{
-		AllowDNS:         true,
-		AllowOutbound:    true,
-		AllowEstablished: true,
+func TestLockAppliesCorrectPolicy(t *testing.T) {
+	runCmd, cmds := fakeRunCmd(t)
+	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
+
+	err := lc.Lock(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Lock() error: %v", err)
 	}
 
+	policy, applied := lc.CurrentPolicy()
+	if !applied {
+		t.Fatal("expected policy to be applied after Lock()")
+	}
+	if policy.AllowOutbound {
+		t.Error("Lock() should set AllowOutbound=false")
+	}
+	if !policy.AllowDNS {
+		t.Error("Lock() should set AllowDNS=true")
+	}
+	if policy.AllowEstablished {
+		t.Error("Lock() should set AllowEstablished=false")
+	}
+
+	if len(*cmds) == 0 {
+		t.Error("expected iptables commands to be executed")
+	}
+
+	locked, err := lc.IsLocked(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("IsLocked() error: %v", err)
+	}
+	if !locked {
+		t.Error("expected IsLocked()=true after Lock()")
+	}
+}
+
+func TestUnlockAppliesCorrectPolicy(t *testing.T) {
+	runCmd, cmds := fakeRunCmd(t)
+	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
+
+	err := lc.Unlock(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Unlock() error: %v", err)
+	}
+
+	policy, applied := lc.CurrentPolicy()
+	if !applied {
+		t.Fatal("expected policy to be applied after Unlock()")
+	}
 	if !policy.AllowOutbound {
-		t.Error("unlocked policy should allow outbound")
+		t.Error("Unlock() should set AllowOutbound=true")
 	}
 	if !policy.AllowEstablished {
-		t.Error("unlocked policy should allow established")
+		t.Error("Unlock() should set AllowEstablished=true")
+	}
+
+	if len(*cmds) == 0 {
+		t.Error("expected iptables commands to be executed")
+	}
+
+	locked, err := lc.IsLocked(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("IsLocked() error: %v", err)
+	}
+	if locked {
+		t.Error("expected IsLocked()=false after Unlock()")
+	}
+}
+
+func TestApplyPolicyCautious(t *testing.T) {
+	runCmd, _ := fakeRunCmd(t)
+	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
+
+	policy := api.NetworkPolicy{
+		AllowDNS:         true,
+		AllowOutbound:    false,
+		AllowEstablished: true,
+		LockAfterSetup:   true,
+	}
+
+	err := lc.ApplyPolicy(context.Background(), "test", policy)
+	if err != nil {
+		t.Fatalf("ApplyPolicy() error: %v", err)
+	}
+
+	got, applied := lc.CurrentPolicy()
+	if !applied {
+		t.Fatal("expected policy to be applied")
+	}
+	if got.AllowOutbound {
+		t.Error("cautious policy should block outbound")
+	}
+	if !got.AllowDNS {
+		t.Error("cautious policy should allow DNS")
+	}
+	if !got.AllowEstablished {
+		t.Error("cautious policy should allow established")
+	}
+	if !got.LockAfterSetup {
+		t.Error("cautious policy should have LockAfterSetup=true")
+	}
+
+	locked, _ := lc.IsLocked(context.Background(), "test")
+	if !locked {
+		t.Error("cautious policy should result in IsLocked()=true")
 	}
 }
 
@@ -59,84 +144,114 @@ func TestNewLimaController(t *testing.T) {
 }
 
 func TestCurrentPolicyBeforeApply(t *testing.T) {
-	lc := NewLimaController("test-vm")
+	runCmd, _ := fakeRunCmd(t)
+	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
 	_, applied := lc.CurrentPolicy()
 	if applied {
 		t.Error("expected no policy applied on new controller")
 	}
 }
 
-func TestCurrentPolicyAfterApply(t *testing.T) {
-	lc := NewLimaController("test-vm")
+func TestLockRulesetContent(t *testing.T) {
+	runCmd, cmds := fakeRunCmd(t)
+	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
 
-	// Simulate successful apply by setting state directly (limactlRun is stub)
-	lc.mu.Lock()
-	lc.policy = api.NetworkPolicy{AllowDNS: true, AllowOutbound: false}
-	lc.applied = true
-	lc.mu.Unlock()
+	lc.Lock(context.Background(), "test")
 
-	policy, applied := lc.CurrentPolicy()
-	if !applied {
-		t.Error("expected policy to be applied")
+	if len(*cmds) != 1 {
+		t.Fatalf("expected 1 iptables-restore command, got %d", len(*cmds))
 	}
-	if policy.AllowOutbound {
-		t.Error("expected locked policy")
+	cmd := (*cmds)[0]
+	if !strings.Contains(cmd, "iptables-restore") {
+		t.Errorf("expected iptables-restore command, got: %s", cmd)
 	}
-}
-
-func TestIsLockedUsesTrackedState(t *testing.T) {
-	lc := NewLimaController("test-vm")
-
-	lc.mu.Lock()
-	lc.policy = api.NetworkPolicy{AllowDNS: true, AllowOutbound: false}
-	lc.applied = true
-	lc.mu.Unlock()
-
-	locked, err := lc.IsLocked(context.Background(), "test")
-	if err != nil {
-		t.Fatalf("IsLocked() error: %v", err)
+	if !strings.Contains(cmd, ":OUTPUT DROP") {
+		t.Error("lock ruleset should default OUTPUT to DROP")
 	}
-	if !locked {
-		t.Error("expected locked=true from tracked state")
+	if !strings.Contains(cmd, "-A OUTPUT -o lo -j ACCEPT") {
+		t.Error("lock ruleset should allow loopback")
+	}
+	if !strings.Contains(cmd, "--dport 53 -j ACCEPT") {
+		t.Error("lock ruleset should allow DNS")
+	}
+	if strings.Contains(cmd, "-A OUTPUT -j DROP") {
+		t.Error("lock ruleset should not have explicit DROP rule — default policy handles it")
 	}
 }
 
-func TestIsLockedUnlockedState(t *testing.T) {
-	lc := NewLimaController("test-vm")
+func TestUnlockRulesetContent(t *testing.T) {
+	runCmd, cmds := fakeRunCmd(t)
+	lc := NewLimaControllerWithRunners("test-vm", runCmd, fakeRunOutput(false))
 
-	lc.mu.Lock()
-	lc.policy = api.NetworkPolicy{AllowDNS: true, AllowOutbound: true}
-	lc.applied = true
-	lc.mu.Unlock()
+	lc.Unlock(context.Background(), "test")
 
-	locked, err := lc.IsLocked(context.Background(), "test")
-	if err != nil {
-		t.Fatalf("IsLocked() error: %v", err)
+	if len(*cmds) != 1 {
+		t.Fatalf("expected 1 iptables-restore command, got %d", len(*cmds))
 	}
-	if locked {
-		t.Error("expected locked=false from tracked state")
+	cmd := (*cmds)[0]
+	if !strings.Contains(cmd, "iptables-restore") {
+		t.Errorf("expected iptables-restore command, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "-A OUTPUT -j ACCEPT") {
+		t.Error("unlock ruleset should allow all outbound")
+	}
+	if !strings.Contains(cmd, "ESTABLISHED,RELATED") {
+		t.Error("unlock ruleset should allow established connections")
 	}
 }
 
-func TestCautiousProfilePolicy(t *testing.T) {
-	// The cautious profile: DNS allowed, outbound blocked, established allowed, lock after setup
-	policy := api.NetworkPolicy{
-		AllowDNS:         true,
-		AllowOutbound:    false,
-		AllowEstablished: true,
-		LockAfterSetup:   true,
+func TestBuildOutputRulesLockPolicy(t *testing.T) {
+	policy := api.NetworkPolicy{AllowDNS: true, AllowOutbound: false, AllowEstablished: false}
+	rules := buildOutputRules(policy)
+
+	if !strings.Contains(rules, ":OUTPUT DROP") {
+		t.Error("lock ruleset should default OUTPUT to DROP")
+	}
+	if strings.Contains(rules, "-A OUTPUT -j DROP") {
+		t.Error("lock ruleset should not have explicit DROP — default policy handles it")
+	}
+	if !strings.Contains(rules, "COMMIT") {
+		t.Error("ruleset must end with COMMIT")
+	}
+}
+
+func TestBuildOutputRulesUnlockPolicy(t *testing.T) {
+	policy := api.NetworkPolicy{AllowDNS: true, AllowOutbound: true, AllowEstablished: true}
+	rules := buildOutputRules(policy)
+
+	if !strings.Contains(rules, "-A OUTPUT -j ACCEPT") {
+		t.Error("unlock ruleset should have ACCEPT all rule")
+	}
+	if !strings.Contains(rules, "ESTABLISHED,RELATED") {
+		t.Error("unlock ruleset should allow established")
+	}
+}
+
+func TestBuildOutputRulesNoDNS(t *testing.T) {
+	policy := api.NetworkPolicy{AllowDNS: false, AllowOutbound: false, AllowEstablished: false}
+	rules := buildOutputRules(policy)
+
+	if strings.Contains(rules, "--dport 53") {
+		t.Error("ruleset should not contain DNS rule when AllowDNS=false")
+	}
+}
+
+func TestApplyPolicyErrorPropagates(t *testing.T) {
+	failCmd := func(_ context.Context, _, _ string) error {
+		return fmt.Errorf("permission denied")
+	}
+	lc := NewLimaControllerWithRunners("test-vm", failCmd, fakeRunOutput(false))
+
+	err := lc.Lock(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error from failing runner")
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("expected wrapped error, got: %v", err)
 	}
 
-	if !policy.AllowDNS {
-		t.Error("cautious policy should allow DNS")
-	}
-	if policy.AllowOutbound {
-		t.Error("cautious policy should block outbound")
-	}
-	if !policy.AllowEstablished {
-		t.Error("cautious policy should allow established connections")
-	}
-	if !policy.LockAfterSetup {
-		t.Error("cautious policy should lock after setup")
+	_, applied := lc.CurrentPolicy()
+	if applied {
+		t.Error("policy should not be recorded after failed apply")
 	}
 }

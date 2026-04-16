@@ -5,6 +5,7 @@
 package detect
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,19 +59,18 @@ func (c *CompositeDetector) Register(d Detector) {
 }
 
 // Detect runs all detectors in priority order and returns the first match.
+// ErrNotDetected causes the loop to continue to the next detector.
+// Any other error causes an immediate return (fail fast).
 func (c *CompositeDetector) Detect(dir string) (api.DetectedRuntime, error) {
-	var lastErr error
 	for _, d := range c.detectors {
 		result, err := d.Detect(dir)
 		if err == nil {
 			return result, nil
 		}
-		if _, ok := err.(ErrNotDetected); !ok {
-			lastErr = err
+		var notDetected ErrNotDetected
+		if !errors.As(err, &notDetected) {
+			return api.DetectedRuntime{}, err
 		}
-	}
-	if lastErr != nil {
-		return api.DetectedRuntime{}, lastErr
 	}
 	return api.DetectedRuntime{}, ErrNotDetected{Dir: dir}
 }
@@ -112,7 +112,11 @@ type nodeDetector struct{}
 func (n *nodeDetector) Type() api.RuntimeType { return api.RuntimeNode }
 func (n *nodeDetector) Priority() int         { return 30 }
 func (n *nodeDetector) Detect(dir string) (api.DetectedRuntime, error) {
-	if !fileExists(dir, "package.json") {
+	exists, err := fileExists(dir, "package.json")
+	if err != nil {
+		return api.DetectedRuntime{}, err
+	}
+	if !exists {
 		return api.DetectedRuntime{}, ErrNotDetected{Dir: dir}
 	}
 
@@ -121,13 +125,16 @@ func (n *nodeDetector) Detect(dir string) (api.DetectedRuntime, error) {
 		Confidence: 0.95,
 	}
 
-	if fileExists(dir, "pnpm-lock.yaml") {
+	if exists, _ := fileExists(dir, "pnpm-lock.yaml"); exists {
 		runtime.InstallCmd = "pnpm install --frozen-lockfile"
 		runtime.RunCmd = "pnpm dev"
-	} else if fileExists(dir, "bun.lockb") || fileExists(dir, "bun.lock") {
+	} else if exists, _ := fileExists(dir, "bun.lockb"); exists {
 		runtime.InstallCmd = "bun install --frozen-lockfile"
 		runtime.RunCmd = "bun run dev"
-	} else if fileExists(dir, "package-lock.json") {
+	} else if exists, _ := fileExists(dir, "bun.lock"); exists {
+		runtime.InstallCmd = "bun install --frozen-lockfile"
+		runtime.RunCmd = "bun run dev"
+	} else if exists, _ := fileExists(dir, "package-lock.json"); exists {
 		runtime.InstallCmd = "npm ci"
 		runtime.RunCmd = "npm run dev"
 	} else {
@@ -143,7 +150,11 @@ type goDetector struct{}
 func (g *goDetector) Type() api.RuntimeType { return api.RuntimeGo }
 func (g *goDetector) Priority() int         { return 20 }
 func (g *goDetector) Detect(dir string) (api.DetectedRuntime, error) {
-	if !fileExists(dir, "go.mod") {
+	exists, err := fileExists(dir, "go.mod")
+	if err != nil {
+		return api.DetectedRuntime{}, err
+	}
+	if !exists {
 		return api.DetectedRuntime{}, ErrNotDetected{Dir: dir}
 	}
 	return api.DetectedRuntime{
@@ -159,7 +170,11 @@ type rustDetector struct{}
 func (r *rustDetector) Type() api.RuntimeType { return api.RuntimeRust }
 func (r *rustDetector) Priority() int         { return 25 }
 func (r *rustDetector) Detect(dir string) (api.DetectedRuntime, error) {
-	if !fileExists(dir, "Cargo.toml") {
+	exists, err := fileExists(dir, "Cargo.toml")
+	if err != nil {
+		return api.DetectedRuntime{}, err
+	}
+	if !exists {
 		return api.DetectedRuntime{}, ErrNotDetected{Dir: dir}
 	}
 	return api.DetectedRuntime{
@@ -175,9 +190,18 @@ type pythonDetector struct{}
 func (p *pythonDetector) Type() api.RuntimeType { return api.RuntimePython }
 func (p *pythonDetector) Priority() int         { return 35 }
 func (p *pythonDetector) Detect(dir string) (api.DetectedRuntime, error) {
-	hasReq := fileExists(dir, "requirements.txt")
-	hasPyproject := fileExists(dir, "pyproject.toml")
-	hasSetup := fileExists(dir, "setup.py")
+	hasReq, err := fileExists(dir, "requirements.txt")
+	if err != nil {
+		return api.DetectedRuntime{}, err
+	}
+	hasPyproject, err := fileExists(dir, "pyproject.toml")
+	if err != nil {
+		return api.DetectedRuntime{}, err
+	}
+	hasSetup, err := fileExists(dir, "setup.py")
+	if err != nil {
+		return api.DetectedRuntime{}, err
+	}
 
 	if !hasReq && !hasPyproject && !hasSetup {
 		return api.DetectedRuntime{}, ErrNotDetected{Dir: dir}
@@ -200,14 +224,30 @@ func (p *pythonDetector) Detect(dir string) (api.DetectedRuntime, error) {
 		runtime.RunCmd = ""
 	} else {
 		mainPy := filepath.Join(dir, "main.py")
+		appPy := filepath.Join(dir, "app.py")
 		if _, err := os.Stat(mainPy); err == nil {
 			runtime.RunCmd = "python main.py"
-		} else {
+		} else if _, err := os.Stat(appPy); err == nil {
 			runtime.RunCmd = "python app.py"
+		} else {
+			runtime.RunCmd = ""
 		}
 	}
 
 	return runtime, nil
+}
+
+func hasComposeFile(dir string) (bool, error) {
+	for _, name := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"} {
+		exists, err := fileExists(dir, name)
+		if err != nil {
+			return false, err
+		}
+		if exists {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 type dockerfileDetector struct{}
@@ -215,11 +255,18 @@ type dockerfileDetector struct{}
 func (d *dockerfileDetector) Type() api.RuntimeType { return api.RuntimeDocker }
 func (d *dockerfileDetector) Priority() int         { return 10 }
 func (d *dockerfileDetector) Detect(dir string) (api.DetectedRuntime, error) {
-	// Only match Dockerfile if no docker-compose.yml exists (compose takes priority)
-	if fileExists(dir, "docker-compose.yml") || fileExists(dir, "docker-compose.yaml") {
+	hasCompose, err := hasComposeFile(dir)
+	if err != nil {
+		return api.DetectedRuntime{}, err
+	}
+	if hasCompose {
 		return api.DetectedRuntime{}, ErrNotDetected{Dir: dir}
 	}
-	if !fileExists(dir, "Dockerfile") {
+	exists, err := fileExists(dir, "Dockerfile")
+	if err != nil {
+		return api.DetectedRuntime{}, err
+	}
+	if !exists {
 		return api.DetectedRuntime{}, ErrNotDetected{Dir: dir}
 	}
 	return api.DetectedRuntime{
@@ -236,7 +283,10 @@ type dockerComposeDetector struct{}
 func (d *dockerComposeDetector) Type() api.RuntimeType { return api.RuntimeCompose }
 func (d *dockerComposeDetector) Priority() int         { return 5 }
 func (d *dockerComposeDetector) Detect(dir string) (api.DetectedRuntime, error) {
-	hasCompose := fileExists(dir, "docker-compose.yml") || fileExists(dir, "docker-compose.yaml")
+	hasCompose, err := hasComposeFile(dir)
+	if err != nil {
+		return api.DetectedRuntime{}, err
+	}
 	if !hasCompose {
 		return api.DetectedRuntime{}, ErrNotDetected{Dir: dir}
 	}
@@ -254,7 +304,15 @@ type makeDetector struct{}
 func (m *makeDetector) Type() api.RuntimeType { return api.RuntimeMake }
 func (m *makeDetector) Priority() int         { return 50 }
 func (m *makeDetector) Detect(dir string) (api.DetectedRuntime, error) {
-	if !fileExists(dir, "Makefile") && !fileExists(dir, "makefile") {
+	hasMakefile, err := fileExists(dir, "Makefile")
+	if err != nil {
+		return api.DetectedRuntime{}, err
+	}
+	hasMakefileLower, err := fileExists(dir, "makefile")
+	if err != nil {
+		return api.DetectedRuntime{}, err
+	}
+	if !hasMakefile && !hasMakefileLower {
 		return api.DetectedRuntime{}, ErrNotDetected{Dir: dir}
 	}
 
@@ -308,7 +366,13 @@ func ResolveRuntimeType(s string) (api.RuntimeType, error) {
 	return rt, nil
 }
 
-func fileExists(dir, name string) bool {
+func fileExists(dir, name string) (bool, error) {
 	_, err := os.Stat(filepath.Join(dir, name))
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("stat %s: %w", filepath.Join(dir, name), err)
 }

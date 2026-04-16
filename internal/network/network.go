@@ -12,18 +12,43 @@ import (
 	"github.com/muneebs/airlock/internal/api"
 )
 
+// CommandRunner executes a command inside a Lima VM and returns an error.
+// Production implementations shell out to limactl; tests provide fakes.
+type CommandRunner func(ctx context.Context, vmName, cmd string) error
+
+// OutputRunner executes a command inside a Lima VM and returns its output.
+// Production implementations shell out to limactl; tests provide fakes.
+type OutputRunner func(ctx context.Context, vmName, cmd string) (string, error)
+
 // LimaController manages network isolation by executing iptables commands
 // inside a Lima VM via limactl. It implements api.NetworkController.
 type LimaController struct {
-	vmName  string
-	mu      sync.Mutex
-	policy  api.NetworkPolicy
-	applied bool
+	vmName    string
+	runCmd    CommandRunner
+	runOutput OutputRunner
+	mu        sync.Mutex
+	policy    api.NetworkPolicy
+	applied   bool
 }
 
-// NewLimaController creates a network controller for the given VM name.
+// NewLimaController creates a network controller for the given VM name
+// using the default (production) limactl runners.
 func NewLimaController(vmName string) *LimaController {
-	return &LimaController{vmName: vmName}
+	return &LimaController{
+		vmName:    vmName,
+		runCmd:    limactlRunExec,
+		runOutput: limactlOutputExec,
+	}
+}
+
+// NewLimaControllerWithRunners creates a network controller with injectable
+// command runners, for testing.
+func NewLimaControllerWithRunners(vmName string, runCmd CommandRunner, runOutput OutputRunner) *LimaController {
+	return &LimaController{
+		vmName:    vmName,
+		runCmd:    runCmd,
+		runOutput: runOutput,
+	}
 }
 
 // Lock blocks all outbound network traffic except DNS and loopback.
@@ -48,46 +73,17 @@ func (lc *LimaController) Unlock(ctx context.Context, sandboxName string) error 
 }
 
 // ApplyPolicy applies a specific network policy using iptables rules.
-// It records the applied policy for inspection via CurrentPolicy().
+// It builds the complete ruleset and applies it atomically via
+// iptables-restore, so a failure never leaves the VM in a partially
+// configured (exposed) state.
 // LockAfterSetup in the policy is not consumed here — the sandbox orchestrator
 // reads it to decide whether to call Lock() after setup completes.
 func (lc *LimaController) ApplyPolicy(ctx context.Context, sandboxName string, policy api.NetworkPolicy) error {
-	vmName := lc.vmName
+	ruleset := buildOutputRules(policy)
+	cmd := fmt.Sprintf("printf '%%s' '%s' | sudo iptables-restore", ruleset)
 
-	// Flush existing OUTPUT rules
-	if err := limactlRun(ctx, vmName, "sudo iptables -F OUTPUT"); err != nil {
-		return fmt.Errorf("flush iptables OUTPUT: %w", err)
-	}
-
-	// Always allow loopback
-	if err := limactlRun(ctx, vmName, "sudo iptables -A OUTPUT -o lo -j ACCEPT"); err != nil {
-		return fmt.Errorf("allow loopback: %w", err)
-	}
-
-	// DNS (UDP port 53)
-	if policy.AllowDNS {
-		if err := limactlRun(ctx, vmName, "sudo iptables -A OUTPUT -p udp --dport 53 -j ACCEPT"); err != nil {
-			return fmt.Errorf("allow DNS: %w", err)
-		}
-	}
-
-	// Established connections
-	if policy.AllowEstablished {
-		if err := limactlRun(ctx, vmName, "sudo iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT"); err != nil {
-			return fmt.Errorf("allow established: %w", err)
-		}
-	}
-
-	// Full outbound
-	if policy.AllowOutbound {
-		if err := limactlRun(ctx, vmName, "sudo iptables -A OUTPUT -j ACCEPT"); err != nil {
-			return fmt.Errorf("allow outbound: %w", err)
-		}
-	} else {
-		// Drop everything else
-		if err := limactlRun(ctx, vmName, "sudo iptables -A OUTPUT -j DROP"); err != nil {
-			return fmt.Errorf("drop outbound: %w", err)
-		}
+	if err := lc.runCmd(ctx, lc.vmName, cmd); err != nil {
+		return fmt.Errorf("apply iptables policy: %w", err)
 	}
 
 	lc.mu.Lock()
@@ -96,6 +92,37 @@ func (lc *LimaController) ApplyPolicy(ctx context.Context, sandboxName string, p
 	lc.mu.Unlock()
 
 	return nil
+}
+
+// buildOutputRules constructs an iptables-restore format ruleset for the
+// OUTPUT chain based on the given policy. The ruleset replaces the OUTPUT
+// chain atomically — either all rules apply or none do.
+func buildOutputRules(policy api.NetworkPolicy) string {
+	var rules strings.Builder
+
+	rules.WriteString("*filter\n")
+	rules.WriteString(":OUTPUT DROP [0:0]\n")
+
+	// Loopback — always allowed
+	rules.WriteString("-A OUTPUT -o lo -j ACCEPT\n")
+
+	// DNS (UDP port 53)
+	if policy.AllowDNS {
+		rules.WriteString("-A OUTPUT -p udp --dport 53 -j ACCEPT\n")
+	}
+
+	// Established connections
+	if policy.AllowEstablished {
+		rules.WriteString("-A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT\n")
+	}
+
+	// Full outbound — override the default DROP policy
+	if policy.AllowOutbound {
+		rules.WriteString("-A OUTPUT -j ACCEPT\n")
+	}
+
+	rules.WriteString("COMMIT\n")
+	return rules.String()
 }
 
 // IsLocked checks whether the network is currently locked.
@@ -110,7 +137,7 @@ func (lc *LimaController) IsLocked(ctx context.Context, sandboxName string) (boo
 	}
 	lc.mu.Unlock()
 
-	output, err := limactlOutput(ctx, lc.vmName, "sudo iptables -L OUTPUT -n")
+	output, err := lc.runOutput(ctx, lc.vmName, "sudo iptables -L OUTPUT -n")
 	if err != nil {
 		return false, fmt.Errorf("check iptables: %w", err)
 	}
@@ -125,16 +152,14 @@ func (lc *LimaController) CurrentPolicy() (api.NetworkPolicy, bool) {
 	return lc.policy, lc.applied
 }
 
-// limactlRun executes a command inside a Lima VM.
-func limactlRun(ctx context.Context, vmName, cmd string) error {
-	// In production, this shells out to:
-	// limactl shell --workdir / <vmName> -- <cmd...>
-	// For now, this is a stub that will be wired to exec.CommandContext.
+// limactlRunExec executes a command inside a Lima VM.
+// Not yet wired to exec.CommandContext — returns an error for now.
+func limactlRunExec(ctx context.Context, vmName, cmd string) error {
 	return fmt.Errorf("limactlRun: not yet wired to exec")
 }
 
-// limactlOutput executes a command inside a Lima VM and returns the output.
-func limactlOutput(ctx context.Context, vmName, cmd string) (string, error) {
-	// In production, this shells out to limactl and captures output.
+// limactlOutputExec executes a command inside a Lima VM and returns the output.
+// Not yet wired to exec.CommandContext — returns an error for now.
+func limactlOutputExec(ctx context.Context, vmName, cmd string) (string, error) {
 	return "", fmt.Errorf("limactlOutput: not yet wired to exec")
 }

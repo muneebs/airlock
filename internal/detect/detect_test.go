@@ -1,6 +1,8 @@
 package detect
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -120,6 +122,49 @@ func TestDockerfileDetection(t *testing.T) {
 	}
 	if !result.NeedsDocker {
 		t.Error("expected NeedsDocker=true for Dockerfile")
+	}
+}
+
+func TestDockerComposeModernFilenames(t *testing.T) {
+	tests := []struct {
+		name     string
+		filename string
+	}{
+		{"docker-compose.yml", "docker-compose.yml"},
+		{"docker-compose.yaml", "docker-compose.yaml"},
+		{"compose.yml", "compose.yml"},
+		{"compose.yaml", "compose.yaml"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			os.WriteFile(filepath.Join(dir, tt.filename), []byte("services:\n  web:\n    image: nginx\n"), 0644)
+
+			d := NewCompositeDetector()
+			result, err := d.Detect(dir)
+			if err != nil {
+				t.Fatalf("Detect() error: %v", err)
+			}
+			if result.Type != api.RuntimeCompose {
+				t.Errorf("expected compose, got %s", result.Type)
+			}
+		})
+	}
+}
+
+func TestDockerfileDetectorSkipsModernCompose(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM alpine\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services:\n  web:\n    image: nginx\n"), 0644)
+
+	d := NewCompositeDetector()
+	result, err := d.Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect() error: %v", err)
+	}
+	if result.Type != api.RuntimeCompose {
+		t.Errorf("expected compose to take priority over Dockerfile when compose.yml exists, got %s", result.Type)
 	}
 }
 
@@ -257,10 +302,68 @@ type staticDetector struct {
 	runtimeType api.RuntimeType
 	priority    int
 	result      api.DetectedRuntime
+	err         error
 }
 
 func (s *staticDetector) Type() api.RuntimeType { return s.runtimeType }
 func (s *staticDetector) Priority() int         { return s.priority }
 func (s *staticDetector) Detect(dir string) (api.DetectedRuntime, error) {
-	return s.result, nil
+	return s.result, s.err
+}
+
+func TestDetectorFailFastOnError(t *testing.T) {
+	d := NewCompositeDetector()
+
+	realErr := fmt.Errorf("permission denied")
+
+	highPriority := &staticDetector{
+		runtimeType: api.RuntimeType("broken"),
+		priority:    1,
+		err:         realErr,
+	}
+	lowPriority := &staticDetector{
+		runtimeType: api.RuntimeType("node"),
+		priority:    100,
+		result:      api.DetectedRuntime{Type: api.RuntimeNode, InstallCmd: "npm ci"},
+	}
+
+	d.Register(highPriority)
+	d.Register(lowPriority)
+
+	dir := t.TempDir()
+	_, err := d.Detect(dir)
+	if err == nil {
+		t.Fatal("expected error from broken detector")
+	}
+	if !errors.Is(err, realErr) {
+		t.Errorf("expected real error to propagate, got: %v", err)
+	}
+}
+
+func TestDetectorWrappedErrNotDetected(t *testing.T) {
+	d := NewCompositeDetector()
+
+	wrapped := &staticDetector{
+		runtimeType: api.RuntimeType("wrapped"),
+		priority:    1,
+		err:         fmt.Errorf("wrapper: %w", ErrNotDetected{Dir: "/test"}),
+	}
+
+	success := &staticDetector{
+		runtimeType: api.RuntimeType("node"),
+		priority:    100,
+		result:      api.DetectedRuntime{Type: api.RuntimeNode, InstallCmd: "npm ci"},
+	}
+
+	d.Register(wrapped)
+	d.Register(success)
+
+	dir := t.TempDir()
+	result, err := d.Detect(dir)
+	if err != nil {
+		t.Fatalf("expected wrapped ErrNotDetected to cause continuation, got: %v", err)
+	}
+	if result.Type != api.RuntimeNode {
+		t.Errorf("expected node result, got %s", result.Type)
+	}
 }

@@ -141,3 +141,6 @@ pid.[0-9]*.log.bak
 *.tsbuildinfo
 .npm
 .pnp.*
+
+# Misc tools
+/.gemini_security/

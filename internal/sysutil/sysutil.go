@@ -14,11 +14,12 @@ import (
 
 // Resources describes the host system's available resources.
 type Resources struct {
-	CPUCores    int    `json:"cpu_cores"`
-	TotalMemory string `json:"total_memory"`
-	MemoryBytes int64  `json:"memory_bytes"`
-	DiskFree    string `json:"disk_free"`
-	DiskBytes   int64  `json:"disk_bytes"`
+	CPUCores     int    `json:"cpu_cores"`
+	TotalMemory  string `json:"total_memory"`
+	MemoryBytes  int64  `json:"memory_bytes"`
+	MemorySource string `json:"memory_source"`
+	DiskFree     string `json:"disk_free"`
+	DiskBytes    int64  `json:"disk_bytes"`
 }
 
 // Requirements describes what a sandbox needs.
@@ -41,7 +42,8 @@ func (i Insufficiency) Error() string {
 
 // CheckResources verifies that the host can satisfy the given requirements.
 // Returns a list of insufficiencies (empty if everything is fine).
-func CheckResources(req Requirements, available Resources) []Insufficiency {
+// Returns an error if any requirement string is malformed.
+func CheckResources(req Requirements, available Resources) ([]Insufficiency, error) {
 	var issues []Insufficiency
 
 	if req.CPU > available.CPUCores {
@@ -52,25 +54,35 @@ func CheckResources(req Requirements, available Resources) []Insufficiency {
 		})
 	}
 
-	reqMemBytes := parseMemoryString(req.Memory)
-	if reqMemBytes > 0 && reqMemBytes > available.MemoryBytes {
-		issues = append(issues, Insufficiency{
-			Resource:  "memory",
-			Required:  req.Memory,
-			Available: available.TotalMemory,
-		})
+	if req.Memory != "" {
+		reqMemBytes, err := parseMemoryString(req.Memory)
+		if err != nil {
+			return nil, fmt.Errorf("invalid memory requirement %q: %w", req.Memory, err)
+		}
+		if reqMemBytes > 0 && reqMemBytes > available.MemoryBytes {
+			issues = append(issues, Insufficiency{
+				Resource:  "memory",
+				Required:  req.Memory,
+				Available: available.TotalMemory,
+			})
+		}
 	}
 
-	reqDiskBytes := parseMemoryString(req.Disk)
-	if reqDiskBytes > 0 && reqDiskBytes > available.DiskBytes {
-		issues = append(issues, Insufficiency{
-			Resource:  "disk",
-			Required:  req.Disk,
-			Available: available.DiskFree,
-		})
+	if req.Disk != "" {
+		reqDiskBytes, err := parseMemoryString(req.Disk)
+		if err != nil {
+			return nil, fmt.Errorf("invalid disk requirement %q: %w", req.Disk, err)
+		}
+		if reqDiskBytes > 0 && reqDiskBytes > available.DiskBytes {
+			issues = append(issues, Insufficiency{
+				Resource:  "disk",
+				Required:  req.Disk,
+				Available: available.DiskFree,
+			})
+		}
 	}
 
-	return issues
+	return issues, nil
 }
 
 // DetectResources queries the current system for available resources.
@@ -79,9 +91,14 @@ func DetectResources() Resources {
 		CPUCores: runtime.NumCPU(),
 	}
 
-	memBytes, memStr := detectMemory()
+	memBytes, memSource := detectMemory()
 	res.MemoryBytes = memBytes
-	res.TotalMemory = memStr
+	res.MemorySource = memSource
+	if memSource == "unknown" {
+		res.TotalMemory = "unknown"
+	} else {
+		res.TotalMemory = formatBytes(memBytes)
+	}
 
 	diskBytes, diskStr := detectDisk()
 	res.DiskBytes = diskBytes
@@ -91,10 +108,10 @@ func DetectResources() Resources {
 }
 
 // parseMemoryString converts strings like "4GiB", "2048MiB", "4096" to bytes.
-// Returns 0 for unparseable strings.
-func parseMemoryString(s string) int64 {
+// Returns (0, nil) for empty strings. Returns (0, error) for malformed input.
+func parseMemoryString(s string) (int64, error) {
 	if s == "" {
-		return 0
+		return 0, nil
 	}
 	s = strings.TrimSpace(s)
 
@@ -118,38 +135,17 @@ func parseMemoryString(s string) int64 {
 			numStr := strings.TrimSuffix(s, suffix)
 			num, err := strconv.ParseFloat(numStr, 64)
 			if err != nil {
-				return 0
+				return 0, fmt.Errorf("parse numeric part of %q: %w", s, err)
 			}
-			return int64(num * float64(mult))
+			return int64(num * float64(mult)), nil
 		}
 	}
 
 	num, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("parse %q as integer bytes: %w", s, err)
 	}
-	return num
-}
-
-func detectMemory() (int64, string) {
-	memBytes := int64(16 * 1024 * 1024 * 1024)
-
-	f, err := os.ReadFile("/proc/meminfo")
-	if err == nil {
-		for _, line := range strings.Split(string(f), "\n") {
-			if strings.HasPrefix(line, "MemTotal:") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					if kb, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-						memBytes = kb * 1024
-					}
-				}
-				break
-			}
-		}
-	}
-
-	return memBytes, formatBytes(memBytes)
+	return num, nil
 }
 
 func detectDisk() (int64, string) {
