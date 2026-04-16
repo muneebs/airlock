@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/muneebs/airlock/internal/api"
@@ -108,6 +109,10 @@ func (m *Manager) resolveRuntime(spec api.SandboxSpec) (api.RuntimeType, error) 
 	if spec.Source != "" {
 		detected, err := m.detector.Detect(spec.Source)
 		if err != nil {
+			var notDetected detect.ErrNotDetected
+			if errors.As(err, &notDetected) {
+				return api.RuntimeUnknown, nil
+			}
 			return api.RuntimeUnknown, fmt.Errorf("auto-detect runtime in %s: %w", spec.Source, err)
 		}
 		return detected.Type, nil

@@ -202,7 +202,7 @@ func TestUnlockRulesetContent(t *testing.T) {
 
 func TestBuildOutputRulesLockPolicy(t *testing.T) {
 	policy := api.NetworkPolicy{AllowDNS: true, AllowOutbound: false, AllowEstablished: false}
-	rules := buildOutputRules(policy)
+	rules := BuildOutputRules(policy)
 
 	if !strings.Contains(rules, ":OUTPUT DROP") {
 		t.Error("lock ruleset should default OUTPUT to DROP")
@@ -217,7 +217,7 @@ func TestBuildOutputRulesLockPolicy(t *testing.T) {
 
 func TestBuildOutputRulesUnlockPolicy(t *testing.T) {
 	policy := api.NetworkPolicy{AllowDNS: true, AllowOutbound: true, AllowEstablished: true}
-	rules := buildOutputRules(policy)
+	rules := BuildOutputRules(policy)
 
 	if !strings.Contains(rules, "-A OUTPUT -j ACCEPT") {
 		t.Error("unlock ruleset should have ACCEPT all rule")
@@ -229,7 +229,7 @@ func TestBuildOutputRulesUnlockPolicy(t *testing.T) {
 
 func TestBuildOutputRulesNoDNS(t *testing.T) {
 	policy := api.NetworkPolicy{AllowDNS: false, AllowOutbound: false, AllowEstablished: false}
-	rules := buildOutputRules(policy)
+	rules := BuildOutputRules(policy)
 
 	if strings.Contains(rules, "--dport 53") {
 		t.Error("ruleset should not contain DNS rule when AllowDNS=false")
