@@ -17,13 +17,6 @@ func (m *Manager) Create(ctx context.Context, spec api.SandboxSpec) (api.Sandbox
 		return api.SandboxInfo{}, ErrInvalidSpec{Reason: "name is required"}
 	}
 
-	m.mu.Lock()
-	if _, exists := m.sandboxes[spec.Name]; exists {
-		m.mu.Unlock()
-		return api.SandboxInfo{}, ErrAlreadyExists{Name: spec.Name}
-	}
-	m.mu.Unlock()
-
 	issues := m.checkRes(spec)
 	if len(issues) > 0 {
 		return api.SandboxInfo{}, fmt.Errorf("insufficient resources: %v", issues)
@@ -40,7 +33,12 @@ func (m *Manager) Create(ctx context.Context, spec api.SandboxSpec) (api.Sandbox
 	}
 
 	info := newSandboxInfo(spec, string(runtimeType), profName)
+
 	m.mu.Lock()
+	if _, exists := m.sandboxes[spec.Name]; exists {
+		m.mu.Unlock()
+		return api.SandboxInfo{}, ErrAlreadyExists{Name: spec.Name}
+	}
 	if err := m.put(info); err != nil {
 		m.mu.Unlock()
 		return api.SandboxInfo{}, fmt.Errorf("save sandbox state: %w", err)
@@ -58,6 +56,9 @@ func (m *Manager) Create(ctx context.Context, spec api.SandboxSpec) (api.Sandbox
 	}
 
 	if err := m.provider.Start(ctx, spec.Name); err != nil {
+		if delErr := m.provider.Delete(ctx, spec.Name); delErr != nil {
+			_ = delErr
+		}
 		m.mu.Lock()
 		info.State = api.StateErrored
 		_ = m.put(info)
@@ -88,16 +89,12 @@ func (m *Manager) Create(ctx context.Context, spec api.SandboxSpec) (api.Sandbox
 		}
 	}
 
-	if spec.Ephemeral {
-		info.State = api.StateRunning
-	} else {
-		info.State = api.StateRunning
-	}
+	info.State = api.StateRunning
 
 	m.mu.Lock()
 	if err := m.put(info); err != nil {
 		m.mu.Unlock()
-		return *info, fmt.Errorf("save sandbox state: %w", err)
+		return api.SandboxInfo{}, fmt.Errorf("save sandbox state: %w", err)
 	}
 	m.mu.Unlock()
 

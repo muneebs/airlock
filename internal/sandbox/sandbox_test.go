@@ -754,7 +754,9 @@ func TestCheckResourcesForSpec(t *testing.T) {
 	}
 
 	issues := CheckResourcesForSpec(spec)
-	_ = issues
+	if issues == nil {
+		t.Error("expected non-nil slice from CheckResourcesForSpec, got nil")
+	}
 }
 
 func TestErrNotFound(t *testing.T) {
@@ -979,5 +981,55 @@ func TestResetRestoreError(t *testing.T) {
 	info, _ := mgr.Status(context.Background(), "reset-fail")
 	if info.State != api.StateErrored {
 		t.Errorf("expected errored state after reset failure, got %s", info.State)
+	}
+}
+
+func TestCreateConcurrentDuplicate(t *testing.T) {
+	mgr, _, _, _, _ := newTestManager(t)
+
+	spec := api.SandboxSpec{
+		Name:    "concurrent-dupe",
+		Profile: "cautious",
+		CPU:     intPtr(2),
+	}
+
+	errCh := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			_, err := mgr.Create(context.Background(), spec)
+			errCh <- err
+		}()
+	}
+
+	errs := []error{}
+	for i := 0; i < 2; i++ {
+		err := <-errCh
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	foundAlreadyExists := false
+	for _, err := range errs {
+		if _, ok := err.(ErrAlreadyExists); ok {
+			foundAlreadyExists = true
+		}
+	}
+	if !foundAlreadyExists {
+		t.Error("expected at least one ErrAlreadyExists from concurrent creation")
+	}
+
+	sandboxes, err := mgr.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	count := 0
+	for _, sb := range sandboxes {
+		if sb.Name == "concurrent-dupe" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 sandbox named 'concurrent-dupe', got %d", count)
 	}
 }

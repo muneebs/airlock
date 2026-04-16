@@ -23,14 +23,19 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 
 	if !running {
 		m.mu.Lock()
+		info, _ = m.get(name)
 		info.State = api.StateStopped
-		_ = m.put(info)
+		if putErr := m.put(info); putErr != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("save sandbox state: %w", putErr)
+		}
 		m.mu.Unlock()
 		return nil
 	}
 
 	if err := m.provider.Stop(ctx, name); err != nil {
 		m.mu.Lock()
+		info, _ = m.get(name)
 		info.State = api.StateErrored
 		_ = m.put(info)
 		m.mu.Unlock()
@@ -38,8 +43,12 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 	}
 
 	m.mu.Lock()
+	info, _ = m.get(name)
 	info.State = api.StateStopped
-	_ = m.put(info)
+	if putErr := m.put(info); putErr != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("save sandbox state: %w", putErr)
+	}
 	m.mu.Unlock()
 
 	return nil

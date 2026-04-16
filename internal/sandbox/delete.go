@@ -15,7 +15,10 @@ func (m *Manager) Destroy(ctx context.Context, name string) error {
 	}
 
 	running, err := m.provider.IsRunning(ctx, name)
-	if err == nil && running {
+	if err != nil {
+		return fmt.Errorf("check running state: %w", err)
+	}
+	if running {
 		if stopErr := m.provider.Stop(ctx, name); stopErr != nil {
 			return fmt.Errorf("stop VM before delete: %w", stopErr)
 		}
@@ -32,7 +35,10 @@ func (m *Manager) Destroy(ctx context.Context, name string) error {
 		}
 	}
 
-	_ = m.mounts.Unregister(ctx, name, name)
+	mounts, _ := m.mounts.List(ctx, name)
+	for _, mt := range mounts {
+		_ = m.mounts.Unregister(ctx, name, mt.Name)
+	}
 
 	m.mu.Lock()
 	_ = m.remove(name)

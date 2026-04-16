@@ -120,11 +120,18 @@ func (m *Manager) remove(name string) error {
 	return m.save()
 }
 
+func derefInt(p *int, def int) int {
+	if p != nil {
+		return *p
+	}
+	return def
+}
+
 // resolveResources merges spec overrides with profile defaults and config defaults.
 func resolveResources(spec api.SandboxSpec, prof profile.Profile, cfgDefaults api.SandboxSpec) api.VMSpec {
-	cpu := cfgDefaults.CPU
+	cpu := derefInt(cfgDefaults.CPU, 2)
 	if spec.CPU != nil {
-		cpu = spec.CPU
+		cpu = *spec.CPU
 	}
 
 	memory := cfgDefaults.Memory
@@ -141,7 +148,7 @@ func resolveResources(spec api.SandboxSpec, prof profile.Profile, cfgDefaults ap
 		Name:   spec.Name,
 		OS:     "Linux",
 		Arch:   "default",
-		CPU:    *cpu,
+		CPU:    cpu,
 		Memory: memory,
 		Disk:   disk,
 		Ports:  spec.Ports,
