@@ -99,8 +99,8 @@ func (f *fakeResetter) RestoreClean(_ context.Context, name string) error {
 	return f.restoreErr
 }
 
-func (f *fakeResetter) HasCleanSnapshot(name string) bool {
-	return f.hasSnapshot
+func (f *fakeResetter) HasCleanSnapshot(_ context.Context, name string) (bool, error) {
+	return f.hasSnapshot, nil
 }
 
 type fakeMountManager struct {
@@ -137,6 +137,7 @@ type fakeNetworkController struct {
 	policies []api.NetworkPolicy
 	locked   []string
 	unlocked []string
+	removed  []string
 }
 
 func (f *fakeNetworkController) Lock(_ context.Context, sandboxName string) error {
@@ -158,7 +159,9 @@ func (f *fakeNetworkController) IsLocked(_ context.Context, sandboxName string) 
 	return len(f.locked) > len(f.unlocked), nil
 }
 
-func (f *fakeNetworkController) RemovePolicy(sandboxName string) {
+func (f *fakeNetworkController) RemovePolicy(_ context.Context, sandboxName string) error {
+	f.removed = append(f.removed, sandboxName)
+	return nil
 }
 
 func newTestManager(t *testing.T) (*Manager, *fakeProvider, *fakeResetter, *fakeMountManager, *fakeNetworkController) {
@@ -416,7 +419,7 @@ func TestStopNonexistentSandbox(t *testing.T) {
 }
 
 func TestDeleteSandbox(t *testing.T) {
-	mgr, provider, _, mounts, _ := newTestManager(t)
+	mgr, provider, _, mounts, network := newTestManager(t)
 
 	spec := api.SandboxSpec{
 		Name:    "delete-test",
@@ -440,6 +443,10 @@ func TestDeleteSandbox(t *testing.T) {
 
 	if _, ok := provider.vms["delete-test"]; ok {
 		t.Error("expected VM to be deleted")
+	}
+
+	if len(network.removed) != 1 || network.removed[0] != "delete-test" {
+		t.Errorf("expected RemovePolicy called with 'delete-test', got %v", network.removed)
 	}
 
 	_, err = mgr.Status(context.Background(), "delete-test")

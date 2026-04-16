@@ -1,6 +1,7 @@
 package lima
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -143,12 +144,20 @@ func TestHasCleanSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	p := NewLimaProviderWithPaths("/bin/true", dir)
 
-	if p.HasCleanSnapshot("test-vm") {
+	ok, err := p.HasCleanSnapshot(context.Background(), "test-vm")
+	if err != nil {
+		t.Fatalf("HasCleanSnapshot error: %v", err)
+	}
+	if ok {
 		t.Error("expected no clean snapshot initially")
 	}
 
 	os.MkdirAll(filepath.Join(dir, "test-vm-clean"), 0755)
-	if !p.HasCleanSnapshot("test-vm") {
+	ok, err = p.HasCleanSnapshot(context.Background(), "test-vm")
+	if err != nil {
+		t.Fatalf("HasCleanSnapshot error after creating dir: %v", err)
+	}
+	if !ok {
 		t.Error("expected clean snapshot to exist after creating dir")
 	}
 }

@@ -40,7 +40,9 @@ func (m *Manager) Destroy(ctx context.Context, name string) error {
 		_ = m.mounts.Unregister(ctx, name, mt.Name)
 	}
 
-	m.network.RemovePolicy(name)
+	if err := m.network.RemovePolicy(ctx, name); err != nil {
+		return fmt.Errorf("remove network policy: %w", err)
+	}
 
 	m.mu.Lock()
 	_ = m.remove(name)

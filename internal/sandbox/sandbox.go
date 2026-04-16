@@ -15,7 +15,6 @@ import (
 
 	"github.com/muneebs/airlock/internal/api"
 	"github.com/muneebs/airlock/internal/detect"
-	"github.com/muneebs/airlock/internal/profile"
 	"github.com/muneebs/airlock/internal/sysutil"
 )
 
@@ -24,7 +23,7 @@ import (
 // to support sandbox reset.
 type Resetter interface {
 	RestoreClean(ctx context.Context, name string) error
-	HasCleanSnapshot(name string) bool
+	HasCleanSnapshot(ctx context.Context, name string) (bool, error)
 }
 
 // ResourceChecker validates that the host has sufficient resources for a sandbox.
@@ -128,7 +127,7 @@ func derefInt(p *int, def int) int {
 }
 
 // resolveResources merges spec overrides with profile defaults and config defaults.
-func resolveResources(spec api.SandboxSpec, prof profile.Profile, cfgDefaults api.SandboxSpec) api.VMSpec {
+func resolveResources(spec api.SandboxSpec, prof api.Profile, cfgDefaults api.SandboxSpec) api.VMSpec {
 	cpu := derefInt(cfgDefaults.CPU, 2)
 	if spec.CPU != nil {
 		cpu = *spec.CPU

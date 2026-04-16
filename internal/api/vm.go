@@ -23,7 +23,7 @@ type Provider interface {
 type Provisioner interface {
 	ProvisionVM(ctx context.Context, name string, nodeVersion int) error
 	SnapshotClean(ctx context.Context, name string) error
-	HasCleanSnapshot(name string) bool
+	HasCleanSnapshot(ctx context.Context, name string) (bool, error)
 }
 
 // ShellProvider provides interactive shell access to a VM. This is a separate

@@ -6,7 +6,6 @@ import (
 
 	"github.com/muneebs/airlock/internal/api"
 	"github.com/muneebs/airlock/internal/detect"
-	"github.com/muneebs/airlock/internal/profile"
 )
 
 // Create orchestrates the full sandbox creation workflow:
@@ -117,7 +116,7 @@ func (m *Manager) resolveRuntime(spec api.SandboxSpec) (api.RuntimeType, error) 
 	return api.RuntimeUnknown, nil
 }
 
-func (m *Manager) resolveProfile(spec api.SandboxSpec) (profile.Profile, string, error) {
+func (m *Manager) resolveProfile(spec api.SandboxSpec) (api.Profile, string, error) {
 	profName := spec.Profile
 	if profName == "" {
 		profName = "cautious"
@@ -125,12 +124,12 @@ func (m *Manager) resolveProfile(spec api.SandboxSpec) (profile.Profile, string,
 
 	prof, err := m.profiles.Get(profName)
 	if err != nil {
-		return profile.Profile{}, "", fmt.Errorf("profile %q: %w", profName, err)
+		return api.Profile{}, "", fmt.Errorf("profile %q: %w", profName, err)
 	}
 	return prof, profName, nil
 }
 
-func (m *Manager) applyNetworkPolicy(ctx context.Context, name string, prof profile.Profile) error {
+func (m *Manager) applyNetworkPolicy(ctx context.Context, name string, prof api.Profile) error {
 	policy := api.NetworkPolicy{
 		AllowDNS:         prof.Network.AllowDNS,
 		AllowOutbound:    prof.Network.AllowOutbound,

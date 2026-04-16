@@ -18,7 +18,11 @@ func (m *Manager) Reset(ctx context.Context, name string) error {
 		return err
 	}
 
-	if !m.resetter.HasCleanSnapshot(name) {
+	hasSnapshot, err := m.resetter.HasCleanSnapshot(ctx, name)
+	if err != nil {
+		return fmt.Errorf("check clean snapshot for %q: %w", name, err)
+	}
+	if !hasSnapshot {
 		return fmt.Errorf("no clean snapshot found for sandbox %q", name)
 	}
 

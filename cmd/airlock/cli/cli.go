@@ -686,14 +686,14 @@ func deriveSandboxName(source string) string {
 	if strings.HasPrefix(source, "gh:") {
 		parts := strings.SplitN(strings.TrimPrefix(source, "gh:"), "/", 2)
 		if len(parts) == 2 {
-			return parts[1]
+			return sanitizeName(strings.TrimSuffix(parts[1], ".git"))
 		}
-		return strings.TrimPrefix(source, "gh:")
+		return sanitizeName(strings.TrimPrefix(source, "gh:"))
 	}
 	if strings.HasPrefix(source, "https://github.com/") {
 		parts := strings.SplitN(strings.TrimPrefix(source, "https://github.com/"), "/", 3)
 		if len(parts) >= 2 {
-			return parts[1]
+			return sanitizeName(strings.TrimSuffix(parts[1], ".git"))
 		}
 	}
 	base := filepath.Base(source)

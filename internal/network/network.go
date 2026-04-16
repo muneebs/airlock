@@ -80,9 +80,17 @@ func (lc *LimaController) Unlock(ctx context.Context, sandboxName string) error 
 // configured (exposed) state.
 // LockAfterSetup in the policy is not consumed here — the sandbox orchestrator
 // reads it to decide whether to call Lock() after setup completes.
+//
+// SECURITY: The ruleset is passed to iptables-restore via a shell heredoc
+// with a quoted delimiter (<<'AIRLOCK_EOF'). The single-quoted delimiter
+// prevents bash from performing any interpolation (variable substitution,
+// command substitution, or escape processing) on the ruleset content. This
+// eliminates the command-injection risk that would exist if the ruleset were
+// embedded directly in a printf or echo command. Even if NetworkPolicy gains
+// string fields in the future, the heredoc content is treated as literal text.
 func (lc *LimaController) ApplyPolicy(ctx context.Context, sandboxName string, policy api.NetworkPolicy) error {
 	ruleset := buildOutputRules(policy)
-	cmd := fmt.Sprintf("printf '%%s' '%s' | sudo iptables-restore", ruleset)
+	cmd := fmt.Sprintf("sudo iptables-restore <<'AIRLOCK_EOF'\n%sAIRLOCK_EOF", ruleset)
 
 	if err := lc.runCmd(ctx, sandboxName, cmd); err != nil {
 		return fmt.Errorf("apply iptables policy: %w", err)
@@ -156,10 +164,11 @@ func (lc *LimaController) CurrentPolicy(sandboxName string) (api.NetworkPolicy, 
 
 // RemovePolicy removes the tracked policy for a sandbox from memory.
 // This should be called when a sandbox is destroyed to prevent memory leaks.
-func (lc *LimaController) RemovePolicy(sandboxName string) {
+func (lc *LimaController) RemovePolicy(_ context.Context, sandboxName string) error {
 	lc.mu.Lock()
 	defer lc.mu.Unlock()
 	delete(lc.policies, sandboxName)
+	return nil
 }
 
 // limactlRunExec executes a command inside a Lima VM via limactl shell.

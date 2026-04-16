@@ -276,7 +276,9 @@ func TestRemovePolicy(t *testing.T) {
 		t.Error("expected policy for sandbox-b after Unlock()")
 	}
 
-	lc.RemovePolicy("sandbox-a")
+	if err := lc.RemovePolicy(context.Background(), "sandbox-a"); err != nil {
+		t.Fatalf("RemovePolicy error: %v", err)
+	}
 	_, appliedA = lc.CurrentPolicy("sandbox-a")
 	if appliedA {
 		t.Error("expected no policy for sandbox-a after RemovePolicy()")

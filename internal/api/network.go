@@ -15,6 +15,6 @@ type NetworkController interface {
 	Lock(ctx context.Context, sandboxName string) error
 	Unlock(ctx context.Context, sandboxName string) error
 	ApplyPolicy(ctx context.Context, sandboxName string, policy NetworkPolicy) error
-	RemovePolicy(sandboxName string)
+	RemovePolicy(ctx context.Context, sandboxName string) error
 	IsLocked(ctx context.Context, sandboxName string) (bool, error)
 }

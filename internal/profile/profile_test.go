@@ -2,6 +2,8 @@ package profile
 
 import (
 	"testing"
+
+	"github.com/muneebs/airlock/internal/api"
 )
 
 func TestNewRegistryHasAllBuiltins(t *testing.T) {
@@ -38,11 +40,11 @@ func TestRegisterCustomProfile(t *testing.T) {
 	custom := Profile{
 		Name:        "custom-test",
 		Description: "A test profile",
-		Network: NetworkPolicy{
+		Network: api.NetworkPolicy{
 			AllowDNS:      true,
 			AllowOutbound: true,
 		},
-		Mount: MountPolicy{
+		Mount: api.MountPolicy{
 			Writable: true,
 		},
 	}
