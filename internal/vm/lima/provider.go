@@ -231,11 +231,11 @@ func shellEscape(s string) string {
 
 // Shell opens an interactive shell session in the VM by exec'ing limactl.
 // It connects stdin/stdout/stderr directly to the terminal for TTY support.
-func (p *LimaProvider) Shell(name string) error {
+func (p *LimaProvider) Shell(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
-	cmd := exec.Command(p.limactlPath, "shell", name)
+	cmd := exec.CommandContext(ctx, p.limactlPath, "shell", name)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

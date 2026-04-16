@@ -260,8 +260,12 @@ func TestRemovePolicy(t *testing.T) {
 	runCmd, _ := fakeRunCmd(t)
 	lc := NewLimaControllerWithRunners(runCmd, fakeRunOutput(false))
 
-	lc.Lock(context.Background(), "sandbox-a")
-	lc.Unlock(context.Background(), "sandbox-b")
+	if err := lc.Lock(context.Background(), "sandbox-a"); err != nil {
+		t.Fatalf("Lock(sandbox-a) error: %v", err)
+	}
+	if err := lc.Unlock(context.Background(), "sandbox-b"); err != nil {
+		t.Fatalf("Unlock(sandbox-b) error: %v", err)
+	}
 
 	_, appliedA := lc.CurrentPolicy("sandbox-a")
 	if !appliedA {

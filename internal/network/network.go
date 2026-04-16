@@ -4,9 +4,9 @@
 package network
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -169,9 +169,13 @@ func limactlRunExec(ctx context.Context, vmName, cmd string) error {
 		return fmt.Errorf("limactl not found in PATH: %w", err)
 	}
 	c := exec.CommandContext(ctx, limactl, "shell", "--workdir", "/", vmName, "--", "bash", "-c", cmd)
-	c.Stdout = io.Discard
-	c.Stderr = io.Discard
-	return c.Run()
+	var stderr bytes.Buffer
+	c.Stdout = nil
+	c.Stderr = &stderr
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("limactl exec in %s: %w: %s", vmName, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 // limactlOutputExec executes a command inside a Lima VM via limactl shell and returns the output.
@@ -181,9 +185,11 @@ func limactlOutputExec(ctx context.Context, vmName, cmd string) (string, error) 
 		return "", fmt.Errorf("limactl not found in PATH: %w", err)
 	}
 	c := exec.CommandContext(ctx, limactl, "shell", "--workdir", "/", vmName, "--", "bash", "-c", cmd)
+	var stderr bytes.Buffer
+	c.Stderr = &stderr
 	output, err := c.Output()
 	if err != nil {
-		return string(output), fmt.Errorf("limactl exec in %s: %w", vmName, err)
+		return string(output), fmt.Errorf("limactl exec in %s: %w: %s", vmName, err, strings.TrimSpace(stderr.String()))
 	}
 	return string(output), nil
 }

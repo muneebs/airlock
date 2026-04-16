@@ -287,11 +287,6 @@ Security profiles:
 			}
 
 			printSandboxInfo(cmd.OutOrStdout(), info)
-
-			if spec.Ephemeral {
-				fmt.Fprintln(cmd.OutOrStdout(), "\nSandbox is ephemeral — it will be destroyed on exit.")
-			}
-
 			return nil
 		},
 	}
@@ -299,7 +294,7 @@ Security profiles:
 	cmd.Flags().StringVarP(&sandboxProfile, "profile", "p", "cautious", "Security profile: strict, cautious, dev, trusted")
 	cmd.Flags().StringVarP(&runtime, "runtime", "r", "", "Override auto-detected runtime: node, go, rust, python, docker, compose, make, dotnet")
 	cmd.Flags().BoolVar(&docker, "docker", false, "Allow Docker access inside the sandbox")
-	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "Destroy sandbox on exit")
+	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "Mark sandbox as ephemeral (metadata only; use 'destroy' to clean up)")
 	cmd.Flags().StringVar(&ports, "ports", "", "Port range to forward (e.g. 3000:9999), default from config")
 	cmd.Flags().StringVarP(&name, "name", "n", "", "Sandbox name (default: derived from source path)")
 
@@ -355,7 +350,7 @@ func newShellCmd(deps *Dependencies) *cobra.Command {
 				return fmt.Errorf("start VM %q: %w", name, err)
 			}
 
-			return deps.Sheller.Shell(name)
+			return deps.Sheller.Shell(ctx, name)
 		},
 	}
 }
@@ -431,7 +426,7 @@ func newRemoveCmd(deps *Dependencies) *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&sandboxName, "sandbox", "s", "", "Sandbox name (required for multi-sandbox setups)")
-	cmd.MarkFlagRequired("sandbox")
+	_ = cmd.MarkFlagRequired("sandbox")
 
 	return cmd
 }

@@ -29,7 +29,7 @@ type Provisioner interface {
 // ShellProvider provides interactive shell access to a VM. This is a separate
 // interface because not all providers support interactive TTY access.
 type ShellProvider interface {
-	Shell(name string) error
+	Shell(ctx context.Context, name string) error
 }
 
 // VMSpec describes a virtual machine to create.
