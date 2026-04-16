@@ -68,6 +68,77 @@ func TestRestoreClean(t *testing.T) {
 	}
 }
 
+func TestSnapshotCleanMasksPermissions(t *testing.T) {
+	dir := t.TempDir()
+	vmDir := filepath.Join(dir, "test-vm")
+	os.MkdirAll(vmDir, 0755)
+	os.WriteFile(filepath.Join(vmDir, "suid-file"), []byte("suid"), 04755)
+	os.WriteFile(filepath.Join(vmDir, "world-writable"), []byte("ww"), 0777)
+	os.WriteFile(filepath.Join(vmDir, "normal-file"), []byte("normal"), 0644)
+
+	p := NewLimaProviderWithPaths("/bin/true", dir)
+
+	err := p.SnapshotClean(nil, "test-vm")
+	if err != nil {
+		t.Fatalf("SnapshotClean() error: %v", err)
+	}
+
+	cleanDir := filepath.Join(dir, "test-vm-clean")
+
+	suidInfo, err := os.Stat(filepath.Join(cleanDir, "suid-file"))
+	if err != nil {
+		t.Fatalf("stat suid-file: %v", err)
+	}
+	if suidInfo.Mode()&04000 != 0 {
+		t.Errorf("SUID bit should be stripped from suid-file, got mode %o", suidInfo.Mode())
+	}
+	if suidInfo.Mode().Perm() != 0755 {
+		t.Errorf("expected mode 0755 for suid-file, got %o", suidInfo.Mode().Perm())
+	}
+
+	wwInfo, err := os.Stat(filepath.Join(cleanDir, "world-writable"))
+	if err != nil {
+		t.Fatalf("stat world-writable: %v", err)
+	}
+	if wwInfo.Mode().Perm()&0002 != 0 {
+		t.Errorf("world-write bit should be stripped, got mode %o", wwInfo.Mode().Perm())
+	}
+
+	normalInfo, err := os.Stat(filepath.Join(cleanDir, "normal-file"))
+	if err != nil {
+		t.Fatalf("stat normal-file: %v", err)
+	}
+	if normalInfo.Mode().Perm() != 0644&0755 {
+		t.Errorf("expected normal file mode masked to %o, got %o", 0644&0755, normalInfo.Mode().Perm())
+	}
+}
+
+func TestRestoreCleanMasksPermissions(t *testing.T) {
+	dir := t.TempDir()
+
+	cleanDir := filepath.Join(dir, "test-vm-clean")
+	os.MkdirAll(cleanDir, 0755)
+	os.WriteFile(filepath.Join(cleanDir, "config"), []byte("clean"), 0644)
+
+	vmDir := filepath.Join(dir, "test-vm")
+	os.MkdirAll(vmDir, 0755)
+
+	p := NewLimaProviderWithPaths("/bin/true", dir)
+
+	err := p.RestoreClean(nil, "test-vm")
+	if err != nil {
+		t.Fatalf("RestoreClean() error: %v", err)
+	}
+
+	restoredInfo, err := os.Stat(filepath.Join(vmDir, "config"))
+	if err != nil {
+		t.Fatalf("stat restored config: %v", err)
+	}
+	if restoredInfo.Mode().Perm() != 0644&0755 {
+		t.Errorf("expected restored file mode %o, got %o", 0644&0755, restoredInfo.Mode().Perm())
+	}
+}
+
 func TestHasCleanSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	p := NewLimaProviderWithPaths("/bin/true", dir)

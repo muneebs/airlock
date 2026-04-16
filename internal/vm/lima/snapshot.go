@@ -11,6 +11,12 @@ import (
 	"github.com/muneebs/airlock/internal/api"
 )
 
+// safeFilePerm masks file permissions to strips SUID, SGID, and world-write bits,
+// preventing privilege escalation via snapshot restore.
+func safeFilePerm(m fs.FileMode) fs.FileMode {
+	return m.Perm() & 0755
+}
+
 // SnapshotClean copies the VM's Lima directory to a -clean baseline,
 // excluding runtime files like sockets. This allows airlock reset to
 // restore the VM to a clean state without re-provisioning.
@@ -54,7 +60,7 @@ func (p *LimaProvider) SnapshotClean(ctx context.Context, name string) error {
 			if err != nil {
 				return err
 			}
-			return os.MkdirAll(targetPath, info.Mode())
+			return os.MkdirAll(targetPath, safeFilePerm(info.Mode()))
 		}
 
 		if !d.Type().IsRegular() {
@@ -70,10 +76,10 @@ func (p *LimaProvider) SnapshotClean(ctx context.Context, name string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(targetPath, data, info.Mode()); err != nil {
+		if err := os.WriteFile(targetPath, data, safeFilePerm(info.Mode())); err != nil {
 			return err
 		}
-		return os.Chmod(targetPath, info.Mode().Perm())
+		return os.Chmod(targetPath, safeFilePerm(info.Mode()).Perm())
 	})
 }
 
@@ -183,7 +189,7 @@ func copyDir(src, dst string) error {
 			if err != nil {
 				return err
 			}
-			return os.MkdirAll(targetPath, info.Mode())
+			return os.MkdirAll(targetPath, safeFilePerm(info.Mode()))
 		}
 
 		if !d.Type().IsRegular() {
@@ -199,10 +205,10 @@ func copyDir(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(targetPath, data, info.Mode()); err != nil {
+		if err := os.WriteFile(targetPath, data, safeFilePerm(info.Mode())); err != nil {
 			return err
 		}
-		return os.Chmod(targetPath, info.Mode().Perm())
+		return os.Chmod(targetPath, safeFilePerm(info.Mode()).Perm())
 	})
 }
 
