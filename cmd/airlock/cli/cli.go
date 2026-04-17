@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/muneebs/airlock/cmd/airlock/cli/tui"
+	"github.com/muneebs/airlock/cmd/airlock/cli/wizard"
 	"github.com/muneebs/airlock/internal/api"
 	"github.com/muneebs/airlock/internal/config"
 	"github.com/muneebs/airlock/internal/detect"
@@ -126,6 +127,7 @@ func newRootCmd(stdout, stderr io.Writer, deps *Dependencies) *cobra.Command {
 	root.SetErr(stderr)
 
 	root.AddCommand(
+		newInitCmd(deps),
 		newSetupCmd(deps),
 		newSandboxCmd(deps),
 		newRunCmd(deps),
@@ -757,6 +759,153 @@ func newProfileCmd(deps *Dependencies) *cobra.Command {
 				table.AddRow(profileStyle.Render(p.Name), p.Description)
 			}
 			fmt.Fprint(cmd.OutOrStdout(), table.Render())
+			return nil
+		},
+	}
+}
+
+func newInitCmd(deps *Dependencies) *cobra.Command {
+	return &cobra.Command{
+		Use:   "init [path-or-url]",
+		Short: "Interactive wizard to create a new sandbox",
+		Long: `Launch an interactive wizard that guides you through creating a secure sandbox.
+
+The wizard will ask you simple questions about:
+- What software you want to run
+- How much you trust it
+- What resources it needs
+- Network access requirements
+
+It then creates the appropriate configuration and optionally the sandbox itself.
+
+Examples:
+  airlock init                    # Wizard for current directory
+  airlock init ./my-project       # Wizard for specific directory
+  airlock init gh:user/repo       # Wizard for GitHub repository`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+
+			// Determine source
+			source := "."
+			if len(args) > 0 {
+				source = args[0]
+			}
+
+			// Get detector for runtime detection
+			detector := detect.NewCompositeDetector()
+
+			// Run the wizard
+			result, err := wizard.Run(source)
+			if err != nil {
+				return err
+			}
+
+			// Detect runtime
+			var runtime string
+			if result.Source != "" {
+				detected, err := detector.Detect(result.Source)
+				if err == nil {
+					runtime = string(detected.Type)
+				}
+			}
+
+			// Save config if requested
+			wizardCfg := result.ToConfig(runtime)
+			
+			if result.SaveConfig {
+				// Determine target directory for config
+				var configDir string
+				if strings.HasPrefix(result.Source, "gh:") || strings.HasPrefix(result.Source, "https://") {
+					// For remote sources, use current directory
+					configDir = "."
+				} else {
+					configDir = result.Source
+				}
+				
+				if err := config.Save(configDir, wizardCfg); err != nil {
+					return fmt.Errorf("save configuration: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "\n%s\n", tui.SuccessLine("Configuration saved to %s/airlock.toml", configDir))
+			}
+
+			// Create sandbox if requested
+			if result.CreateNow {
+				spec := result.ToSandboxSpec(runtime)
+
+				var createStage atomic.Value
+				createStage.Store("starting")
+
+				phases := []tui.Phase{
+					{
+						Label:     "Creating VM " + spec.Name + " (fresh Ubuntu boot takes 5–7 min)",
+						DoneLabel: "VM " + spec.Name + " created and booted",
+						Action: func() error {
+							_, err := deps.Manager.CreateWithOptions(ctx, spec, api.CreateOptions{
+								Progress: func(stage string) {
+									createStage.Store(stage)
+								},
+								SkipNetworkPolicy: true,
+							})
+							return err
+						},
+						Status: func() string {
+							s, _ := createStage.Load().(string)
+							return s
+						},
+					},
+				}
+
+				// Add provisioning steps
+				for _, step := range deps.Provisioner.ProvisionSteps(spec.Name, wizardCfg.VM.NodeVersion) {
+					step := step
+					phases = append(phases, tui.Phase{
+						Label:     step.Label,
+						DoneLabel: step.Label,
+						Action:    func() error { return step.Run(ctx) },
+					})
+				}
+
+				// Apply network policy
+				phases = append(phases, tui.Phase{
+					Label:     "Applying network policy",
+					DoneLabel: "Network policy applied",
+					Action: func() error {
+						return deps.Manager.ApplyNetworkProfile(ctx, spec.Name)
+					},
+				})
+
+				// Lock network if needed
+				if result.NeedsNetworkLock() {
+					phases = append(phases, tui.Phase{
+						Label:     "Locking network",
+						DoneLabel: "Network locked",
+						Action: func() error {
+							return deps.Network.Lock(ctx, spec.Name)
+						},
+					})
+				}
+
+				// Save snapshot
+				phases = append(phases, tui.Phase{
+					Label:     "Saving clean snapshot",
+					DoneLabel: "Snapshot saved",
+					Action: func() error {
+						return deps.Provisioner.SnapshotClean(ctx, spec.Name)
+					},
+				})
+
+				if err := tui.RunPhases(phases); err != nil {
+					return err
+				}
+
+				fmt.Fprintf(cmd.OutOrStdout(), "\n%s\n", tui.SuccessLine("Sandbox %q is ready to use.", spec.Name))
+				fmt.Fprintf(cmd.OutOrStdout(), "\nRun 'airlock shell %s' to enter the sandbox, or 'airlock run %s -- <command>' to run commands.\n", spec.Name, spec.Name)
+			}
+
 			return nil
 		},
 	}

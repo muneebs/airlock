@@ -16,12 +16,13 @@ import (
 // Config represents an airlock project configuration. This is the single source
 // of truth — both TOML and YAML map to this struct with zero semantic difference.
 type Config struct {
-	VM       VMConfig       `json:"vm" yaml:"vm" toml:"vm"`
-	Dev      DevConfig      `json:"dev" yaml:"dev" toml:"dev"`
-	Runtime  RuntimeConfig  `json:"runtime" yaml:"runtime" toml:"runtime"`
-	Security SecurityConfig `json:"security" yaml:"security" toml:"security"`
-	Services ServicesConfig `json:"services" yaml:"services" toml:"services"`
-	Mounts   []MountConfig  `json:"mounts" yaml:"mounts" toml:"mounts"`
+	VM           VMConfig       `json:"vm" yaml:"vm" toml:"vm"`
+	Dev          DevConfig      `json:"dev" yaml:"dev" toml:"dev"`
+	Runtime      RuntimeConfig  `json:"runtime" yaml:"runtime" toml:"runtime"`
+	Security     SecurityConfig `json:"security" yaml:"security" toml:"security"`
+	Services     ServicesConfig `json:"services" yaml:"services" toml:"services"`
+	Mounts       []MountConfig  `json:"mounts" yaml:"mounts" toml:"mounts"`
+	StartAtLogin bool           `json:"start_at_login,omitempty" yaml:"start_at_login,omitempty" toml:"start_at_login,omitempty"`
 }
 
 // VMConfig controls the virtual machine resource allocation.
