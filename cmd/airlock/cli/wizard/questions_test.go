@@ -38,10 +38,10 @@ func TestDeriveSandboxName_Sanitization(t *testing.T) {
 		source   string
 		expected string
 	}{
-		{"with spaces", "./my project", "myproject"},  // Spaces are removed
-		{"starting with number", "./1project", "_1project"}, // Numbers at start get underscore prefix
+		{"with spaces", "./my project", "myproject"},         // Spaces are removed
+		{"starting with number", "./1project", "_1project"},  // Numbers at start get underscore prefix
 		{"with special chars", "./my@project#", "myproject"}, // Special chars removed
-		{"empty after sanitize", "./@#$%", "_"}, // All special chars become underscore
+		{"empty after sanitize", "./@#$%", "_"},              // All special chars become underscore
 	}
 
 	for _, tt := range tests {
@@ -120,11 +120,11 @@ func TestSanitizeName(t *testing.T) {
 		{"my-project", "my-project"},
 		{"my_project", "my_project"},
 		{"my.project", "my.project"},
-		{"my project", "myproject"},       // Space is removed (not replaced with underscore)
-		{"my@project", "myproject"},     // @ is removed
-		{"1project", "_1project"},       // Numbers at start get underscore prefix
-		{"@#$%", "_"},                   // All special chars become underscore (but only one at start)
-		{"", "sandbox"},                 // Empty becomes sandbox
+		{"my project", "myproject"}, // Space is removed (not replaced with underscore)
+		{"my@project", "myproject"}, // @ is removed
+		{"1project", "_1project"},   // Numbers at start get underscore prefix
+		{"@#$%", "_"},               // All special chars become underscore (but only one at start)
+		{"", "sandbox"},             // Empty becomes sandbox
 	}
 
 	for _, tt := range tests {
@@ -139,7 +139,7 @@ func TestSanitizeName(t *testing.T) {
 
 func TestIsAlpha(t *testing.T) {
 	tests := []struct {
-		r    rune
+		r        rune
 		expected bool
 	}{
 		{'a', true},
@@ -165,7 +165,7 @@ func TestIsAlpha(t *testing.T) {
 
 func TestIsAlphaNum(t *testing.T) {
 	tests := []struct {
-		r    rune
+		r        rune
 		expected bool
 	}{
 		{'a', true},
@@ -189,7 +189,7 @@ func TestIsAlphaNum(t *testing.T) {
 
 func TestTrustLevels_ContainExpected(t *testing.T) {
 	levels := TrustLevels()
-	
+
 	// Verify we have all expected levels
 	expectedLabels := map[string]bool{
 		"strict":   false,
@@ -197,7 +197,7 @@ func TestTrustLevels_ContainExpected(t *testing.T) {
 		"dev":      false,
 		"trusted":  false,
 	}
-	
+
 	for _, level := range levels {
 		for key := range expectedLabels {
 			if strings.Contains(string(level.Level), key) {
@@ -206,7 +206,7 @@ func TestTrustLevels_ContainExpected(t *testing.T) {
 			}
 		}
 	}
-	
+
 	for key, found := range expectedLabels {
 		if !found {
 			t.Errorf("TrustLevels() missing expected level: %s", key)
@@ -216,13 +216,13 @@ func TestTrustLevels_ContainExpected(t *testing.T) {
 
 func TestResourceLevels_ValidValues(t *testing.T) {
 	levels := ResourceLevels()
-	
+
 	// Verify all levels have valid resource values
 	for _, level := range levels {
 		if level.CPU < 1 {
 			t.Errorf("%s: CPU must be >= 1, got %d", level.Level, level.CPU)
 		}
-		
+
 		if !strings.HasSuffix(level.Memory, "GiB") {
 			t.Errorf("%s: Memory should end with GiB, got %s", level.Level, level.Memory)
 		}
@@ -231,12 +231,12 @@ func TestResourceLevels_ValidValues(t *testing.T) {
 
 func TestNetworkLevels_ContainExpected(t *testing.T) {
 	levels := NetworkLevels()
-	
+
 	// Verify we have all expected levels
 	foundNone := false
 	foundDownloads := false
 	foundOngoing := false
-	
+
 	for _, level := range levels {
 		switch level.Level {
 		case NetworkNone:
@@ -247,7 +247,7 @@ func TestNetworkLevels_ContainExpected(t *testing.T) {
 			foundOngoing = true
 		}
 	}
-	
+
 	if !foundNone {
 		t.Error("NetworkLevels() missing 'none'")
 	}
