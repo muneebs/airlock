@@ -13,18 +13,16 @@ import (
 	"github.com/muneebs/airlock/cmd/airlock/cli/tui"
 	"github.com/muneebs/airlock/cmd/airlock/cli/wizard"
 	"github.com/muneebs/airlock/internal/api"
+	"github.com/muneebs/airlock/internal/bootstrap"
 	"github.com/muneebs/airlock/internal/config"
-	"github.com/muneebs/airlock/internal/detect"
-	"github.com/muneebs/airlock/internal/mount"
-	"github.com/muneebs/airlock/internal/network"
-	"github.com/muneebs/airlock/internal/profile"
-	"github.com/muneebs/airlock/internal/sandbox"
-	"github.com/muneebs/airlock/internal/vm/lima"
 	"github.com/spf13/cobra"
 )
 
 var version = "0.1.0"
 
+// Dependencies bundles the fully-wired interface values a command needs.
+// It is built by internal/bootstrap and injected here — the cli package
+// must not import concrete backends (see PRINCIPLES.md §5, DIP).
 type Dependencies struct {
 	Manager     api.SandboxManager
 	Provider    api.Provider
@@ -33,76 +31,46 @@ type Dependencies struct {
 	Mounts      api.MountManager
 	Network     api.NetworkController
 	Profiles    api.ProfileRegistry
+	Detector    api.RuntimeDetector
 	ConfigDir   string
 	IsTTY       bool
+}
+
+// FromBootstrap adapts a bootstrap-assembled graph into cli.Dependencies,
+// filling in TTY detection which is a presentation concern owned by cli.
+func FromBootstrap(d *bootstrap.Dependencies) *Dependencies {
+	return &Dependencies{
+		Manager:     d.Manager,
+		Provider:    d.Provider,
+		Provisioner: d.Provisioner,
+		Sheller:     d.Sheller,
+		Mounts:      d.Mounts,
+		Network:     d.Network,
+		Profiles:    d.Profiles,
+		Detector:    d.Detector,
+		ConfigDir:   d.ConfigDir,
+		IsTTY:       isTerminal(os.Stdout),
+	}
 }
 
 func Execute() error {
 	return ExecuteContext(context.Background())
 }
 
-// ExecuteContext runs the root command with the given context. The context
-// is propagated to all subcommands so SIGINT/SIGTERM can cancel in-flight
-// work and trigger rollback paths.
+// ExecuteContext assembles default dependencies via bootstrap and runs the
+// root command with the given context. Use ExecuteWithDeps for tests or
+// alternative wirings.
 func ExecuteContext(ctx context.Context) error {
-	deps, err := assembleDependencies()
+	boot, err := bootstrap.Assemble()
 	if err != nil {
 		return fmt.Errorf("initialize: %w", err)
 	}
-	return newRootCmd(os.Stdout, os.Stderr, deps).ExecuteContext(ctx)
+	return ExecuteWithDeps(ctx, FromBootstrap(boot))
 }
 
-func assembleDependencies() (*Dependencies, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("get home dir: %w", err)
-	}
-	configDir := filepath.Join(home, ".airlock")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return nil, fmt.Errorf("create config dir: %w", err)
-	}
-
-	limaProvider, err := lima.NewLimaProvider()
-	if err != nil {
-		return nil, fmt.Errorf("init lima provider: %w", err)
-	}
-
-	detector := detect.NewCompositeDetector()
-	profiles := profile.NewRegistry()
-
-	mountStore, err := mount.NewJSONStore(filepath.Join(configDir, "mounts.json"))
-	if err != nil {
-		return nil, fmt.Errorf("init mount store: %w", err)
-	}
-
-	storePath := filepath.Join(configDir, "sandboxes.json")
-
-	networkCtrl := network.NewLimaController()
-
-	mgr, err := sandbox.NewManager(
-		limaProvider,
-		limaProvider,
-		detector,
-		profiles,
-		mountStore,
-		networkCtrl,
-		storePath,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("init sandbox manager: %w", err)
-	}
-
-	return &Dependencies{
-		Manager:     mgr,
-		Provider:    limaProvider,
-		Provisioner: limaProvider,
-		Sheller:     limaProvider,
-		Mounts:      mountStore,
-		Network:     networkCtrl,
-		Profiles:    profiles,
-		ConfigDir:   configDir,
-		IsTTY:       isTerminal(os.Stdout),
-	}, nil
+// ExecuteWithDeps runs the root command against caller-supplied dependencies.
+func ExecuteWithDeps(ctx context.Context, deps *Dependencies) error {
+	return newRootCmd(os.Stdout, os.Stderr, deps).ExecuteContext(ctx)
 }
 
 func isTerminal(f *os.File) bool {
@@ -795,19 +763,16 @@ Examples:
 				source = args[0]
 			}
 
-			// Get detector for runtime detection
-			detector := detect.NewCompositeDetector()
-
 			// Run the wizard
 			result, err := wizard.Run(source)
 			if err != nil {
 				return err
 			}
 
-			// Detect runtime
+			// Detect runtime using injected detector (no concrete import)
 			var runtime string
 			if result.Source != "" {
-				detected, err := detector.Detect(result.Source)
+				detected, err := deps.Detector.Detect(result.Source)
 				if err == nil {
 					runtime = string(detected.Type)
 				}
