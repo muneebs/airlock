@@ -140,5 +140,7 @@ func CleanError(err error) string {
 }
 
 func init() {
-	lipgloss.SetColorProfile(termenv.ANSI256)
+	if isTerminal() {
+		lipgloss.SetColorProfile(termenv.EnvColorProfile())
+	}
 }

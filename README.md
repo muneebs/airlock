@@ -12,13 +12,15 @@ curl -fsSL https://raw.githubusercontent.com/muneebs/airlock/main/install.sh | b
 
 Downloads a pre-built binary from [GitHub Releases](https://github.com/muneebs/airlock/releases).
 
-**From source (requires Go 1.23+):**
+**From source (requires Go 1.24):**
 
 ```bash
 git clone https://github.com/muneebs/airlock
 cd airlock
 make install
 ```
+
+Installs to `$GOPATH/bin/airlock` — ensure that directory is on your `PATH`. The one-liner above installs to `~/.local/bin/airlock` instead.
 
 **Prerequisites:** macOS (Apple Silicon or Intel) with [Lima](https://github.com/lima-vm/lima) installed.
 

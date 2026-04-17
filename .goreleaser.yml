@@ -18,7 +18,8 @@ builds:
       - -s -w -X github.com/muneebs/airlock/cmd/airlock/cli.version={{.Version}}
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     name_template: >-
       {{ .ProjectName }}_
       {{- .Version }}_
@@ -66,5 +67,5 @@ release:
   github:
     owner: muneebs
     name: airlock
-  header_extra: |-
+  header: |-
     **Installation:** `curl -fsSL https://raw.githubusercontent.com/muneebs/airlock/main/install.sh | bash`

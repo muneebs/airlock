@@ -2,6 +2,7 @@
 
 BINARY = airlock
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
+GOPATH := $(shell go env GOPATH 2>/dev/null || echo $(HOME)/go)
 
 LDFLAGS = -s -w -X github.com/muneebs/airlock/cmd/airlock/cli.version=$(VERSION)
 
@@ -25,8 +26,8 @@ fmt:
 lint: vet fmt
 
 install: build
-	@cp $(BINARY) $(GOPATH)/bin/$(BINARY) 2>/dev/null || cp $(BINARY) $(HOME)/go/bin/$(BINARY)
-	@echo "Installed to $(HOME)/go/bin/$(BINARY)"
+	@cp $(BINARY) $(GOPATH)/bin/$(BINARY)
+	@echo "Installed to $(GOPATH)/bin/$(BINARY)"
 
 dist:
 	goreleaser build --clean --snapshot

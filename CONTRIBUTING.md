@@ -4,7 +4,7 @@ Thank you for your interest in contributing. This document covers the practical 
 
 ## Prerequisites
 
-- Go 1.23+
+- Go 1.24
 - Lima (for manual testing on macOS)
 - `make` (build tasks are in the Makefile)
 

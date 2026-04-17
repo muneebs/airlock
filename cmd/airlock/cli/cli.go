@@ -281,12 +281,18 @@ Security profiles:
 			}
 
 			var info api.SandboxInfo
-			if err := tui.RunSpinner("Creating sandbox "+name, "Sandbox "+name+" created", func() error {
-				var err error
-				info, err = deps.Manager.Create(ctx, spec)
-				return err
-			}); err != nil {
-				return err
+			var createErr error
+			if jsonOutput {
+				info, createErr = deps.Manager.Create(ctx, spec)
+			} else {
+				createErr = tui.RunSpinner("Creating sandbox "+name, "Sandbox "+name+" created", func() error {
+					var err error
+					info, err = deps.Manager.Create(ctx, spec)
+					return err
+				})
+			}
+			if createErr != nil {
+				return createErr
 			}
 
 			if jsonOutput {
