@@ -21,7 +21,13 @@ vet:
 	go vet ./...
 
 fmt:
-	@gofmt -d . | grep -q . && echo "Formatting issues found. Run gofmt -w ." && exit 1 || echo "Formatting OK."
+	@out=$$(gofmt -l .); \
+	if [ -n "$$out" ]; then \
+		echo "Formatting issues found in:"; echo "$$out"; \
+		echo "Run 'gofmt -w .' to fix."; \
+		exit 1; \
+	fi; \
+	echo "Formatting OK."
 
 lint: vet fmt
 

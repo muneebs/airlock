@@ -1,7 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-# Airlock Installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/muneebs/airlock/main/install.sh | bash
 
 REPO="muneebs/airlock"
@@ -18,8 +17,6 @@ info()  { echo -e "${GREEN}[+]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[x]${NC} $1"; exit 1; }
 
-# --- Detect architecture ---
-
 ARCH="$(uname -m)"
 case "${ARCH}" in
     x86_64)  GOARCH="x86_64" ;;
@@ -28,6 +25,16 @@ case "${ARCH}" in
 esac
 
 [[ "$(uname)" == "Darwin" ]] || error "macOS required. airlock uses Apple Virtualization framework via Lima."
+
+# --- sha256 tool discovery ---
+
+if command -v shasum >/dev/null 2>&1; then
+    SHA256="shasum -a 256"
+elif command -v sha256sum >/dev/null 2>&1; then
+    SHA256="sha256sum"
+else
+    error "Neither shasum nor sha256sum found. Cannot verify download integrity."
+fi
 
 # --- Find latest release ---
 
@@ -47,29 +54,45 @@ if [[ -z "${VERSION}" ]]; then
     error "Could not determine latest version. Set INSTALL_VERSION or check https://github.com/${REPO}/releases"
 fi
 
-# Strip leading 'v' if present
 VERSION="${VERSION#v}"
 
-# --- Download ---
-
 FILENAME="airlock_${VERSION}_darwin_${GOARCH}.tar.gz"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${FILENAME}"
+BASE_URL="https://github.com/${REPO}/releases/download/v${VERSION}"
+ARCHIVE_URL="${BASE_URL}/${FILENAME}"
+CHECKSUMS_URL="${BASE_URL}/checksums.txt"
+
+# --- Isolated scratch dir (avoid symlink/race in /tmp) ---
+
+WORKDIR="$(mktemp -d -t airlock-install.XXXXXX)"
+cleanup() { rm -rf "${WORKDIR}"; }
+trap cleanup EXIT
 
 mkdir -p "${INSTALL_DIR}"
 
 info "Downloading airlock v${VERSION} for macOS ${GOARCH}..."
-if ! curl -fsSL "${DOWNLOAD_URL}" -o /tmp/airlock.tar.gz; then
-    error "Download failed from ${DOWNLOAD_URL}. Check the version and try again."
+if ! curl -fsSL "${ARCHIVE_URL}" -o "${WORKDIR}/${FILENAME}"; then
+    error "Download failed from ${ARCHIVE_URL}. Check the version and try again."
 fi
 
-tar -xzf /tmp/airlock.tar.gz -C /tmp/ airlock
-mv /tmp/airlock "${INSTALL_DIR}/airlock"
-chmod +x "${INSTALL_DIR}/airlock"
-rm -f /tmp/airlock.tar.gz
+info "Fetching checksums..."
+if ! curl -fsSL "${CHECKSUMS_URL}" -o "${WORKDIR}/checksums.txt"; then
+    error "Checksum download failed from ${CHECKSUMS_URL}."
+fi
 
-info "Installed to ${INSTALL_DIR}/airlock"
+info "Verifying checksum..."
+EXPECTED="$(grep " ${FILENAME}\$" "${WORKDIR}/checksums.txt" | awk '{print $1}')"
+if [[ -z "${EXPECTED}" ]]; then
+    error "No checksum entry for ${FILENAME} in checksums.txt."
+fi
+ACTUAL="$(${SHA256} "${WORKDIR}/${FILENAME}" | awk '{print $1}')"
+if [[ "${EXPECTED}" != "${ACTUAL}" ]]; then
+    error "Checksum mismatch for ${FILENAME}. Expected ${EXPECTED}, got ${ACTUAL}."
+fi
 
-# --- Ensure PATH includes install dir ---
+tar -xzf "${WORKDIR}/${FILENAME}" -C "${WORKDIR}" "${BINARY}"
+install -m 0755 "${WORKDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+
+info "Installed to ${INSTALL_DIR}/${BINARY}"
 
 add_to_path() {
     local shell_rc="$1"
@@ -90,8 +113,6 @@ if ! echo "$PATH" | grep -q "${HOME}/.local/bin"; then
     esac
     warn "Restart your shell or run: export PATH=\"\${HOME}/.local/bin:\${PATH}\""
 fi
-
-# --- Verify ---
 
 echo ""
 info "${BOLD}airlock v${VERSION} installed!${NC}"

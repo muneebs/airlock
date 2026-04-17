@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/muneebs/airlock/internal/api"
 	"github.com/muneebs/airlock/internal/detect"
@@ -36,11 +37,20 @@ func (m *Manager) Create(ctx context.Context, spec api.SandboxSpec) (api.Sandbox
 
 	m.mu.Lock()
 	if existing, exists := m.sandboxes[spec.Name]; exists {
-		if existing.State != api.StateErrored {
+		// States that signal a prior attempt did not finish cleanly:
+		// - errored: we explicitly marked failure
+		// - creating: the process died (ctrl-c, crash) before final state was saved
+		recoverable := existing.State == api.StateErrored || existing.State == api.StateCreating
+		if !recoverable {
 			m.mu.Unlock()
 			return api.SandboxInfo{}, ErrAlreadyExists{Name: spec.Name}
 		}
 		_ = m.remove(spec.Name)
+		m.mu.Unlock()
+		if delErr := m.provider.Delete(ctx, spec.Name); delErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: delete prior %s VM %q: %v\n", existing.State, spec.Name, delErr)
+		}
+		m.mu.Lock()
 	}
 	if err := m.put(info); err != nil {
 		m.mu.Unlock()
@@ -60,7 +70,7 @@ func (m *Manager) Create(ctx context.Context, spec api.SandboxSpec) (api.Sandbox
 
 	if err := m.provider.Start(ctx, spec.Name); err != nil {
 		if delErr := m.provider.Delete(ctx, spec.Name); delErr != nil {
-			_ = delErr
+			fmt.Fprintf(os.Stderr, "warning: rollback delete VM %q: %v\n", spec.Name, delErr)
 		}
 		m.mu.Lock()
 		info.State = api.StateErrored

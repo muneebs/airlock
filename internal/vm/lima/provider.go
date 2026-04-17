@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,11 +89,14 @@ func (p *LimaProvider) Create(ctx context.Context, spec api.VMSpec) error {
 }
 
 // Start starts an existing Lima VM.
+// First boot of a fresh VM can take several minutes (cloud-init, package
+// installation, SSH setup). stderr is streamed to the terminal so the user
+// sees lima's progress instead of silent hang.
 func (p *LimaProvider) Start(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
-	_, err := p.runCmd(ctx, "start", name)
+	_, err := p.runCmdStreaming(ctx, "start", name)
 	if err != nil {
 		return fmt.Errorf("start VM %s: %w", name, err)
 	}
@@ -237,17 +241,18 @@ func (p *LimaProvider) runCmd(ctx context.Context, args ...string) (string, erro
 }
 
 // runCmdStreaming executes a limactl command, streaming stderr to the terminal
-// so the user sees progress (image downloads, provisioning, etc.).
+// so the user sees progress (image downloads, provisioning, etc.) while also
+// capturing it so any failure message is preserved in the returned error.
 // Only use this for "create" — other commands should use buffered runCmd
 // because limactl start daemonizes when stderr is not a terminal.
 func (p *LimaProvider) runCmdStreaming(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, p.limactlPath, args...)
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 
 	if err := cmd.Run(); err != nil {
-		return stdout.String(), fmt.Errorf("limactl %s: %w", args[0], err)
+		return stdout.String(), fmt.Errorf("%s: %w", cleanLimactlError(args[0], stderr.String()), err)
 	}
 	return stdout.String(), nil
 }

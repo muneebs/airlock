@@ -36,11 +36,18 @@ type Dependencies struct {
 }
 
 func Execute() error {
+	return ExecuteContext(context.Background())
+}
+
+// ExecuteContext runs the root command with the given context. The context
+// is propagated to all subcommands so SIGINT/SIGTERM can cancel in-flight
+// work and trigger rollback paths.
+func ExecuteContext(ctx context.Context) error {
 	deps, err := assembleDependencies()
 	if err != nil {
 		return fmt.Errorf("initialize: %w", err)
 	}
-	return newRootCmd(os.Stdout, os.Stderr, deps).Execute()
+	return newRootCmd(os.Stdout, os.Stderr, deps).ExecuteContext(ctx)
 }
 
 func assembleDependencies() (*Dependencies, error) {

@@ -67,12 +67,6 @@ type LimaMount struct {
 	Writable   bool   `yaml:"writable"`
 }
 
-type LimaNineP struct {
-	SecurityModel   string `yaml:"securityModel,omitempty"`
-	ProtocolVersion string `yaml:"protocolVersion,omitempty"`
-	Msize           string `yaml:"msize,omitempty"`
-}
-
 type LimaPortForward struct {
 	GuestPortRange [2]int `yaml:"guestPortRange"`
 	HostPortRange  [2]int `yaml:"hostPortRange"`
