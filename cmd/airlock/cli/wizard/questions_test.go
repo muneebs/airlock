@@ -39,7 +39,7 @@ func TestDeriveSandboxName_Sanitization(t *testing.T) {
 		expected string
 	}{
 		{"with spaces", "./my project", "myproject"},  // Spaces are removed
-		{"starting with number", "./1project", "_project"}, // Numbers at start become underscore prefix
+		{"starting with number", "./1project", "_1project"}, // Numbers at start get underscore prefix
 		{"with special chars", "./my@project#", "myproject"}, // Special chars removed
 		{"empty after sanitize", "./@#$%", "_"}, // All special chars become underscore
 	}
@@ -122,7 +122,7 @@ func TestSanitizeName(t *testing.T) {
 		{"my.project", "my.project"},
 		{"my project", "myproject"},       // Space is removed (not replaced with underscore)
 		{"my@project", "myproject"},     // @ is removed
-		{"1project", "_project"},        // Numbers at start become underscore prefix
+		{"1project", "_1project"},       // Numbers at start get underscore prefix
 		{"@#$%", "_"},                   // All special chars become underscore (but only one at start)
 		{"", "sandbox"},                 // Empty becomes sandbox
 	}

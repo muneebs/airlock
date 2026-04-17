@@ -37,7 +37,7 @@ func FormatWithComments(cfg Config) (string, error) {
 
 	// Parse TOML and inject comments between sections
 	tomlStr := string(tomlBytes)
-	
+
 	var b strings.Builder
 
 	// Header with generation info
@@ -47,13 +47,17 @@ func FormatWithComments(cfg Config) (string, error) {
 	b.WriteString("# Documentation: https://github.com/muneebs/airlock\n")
 	b.WriteString("#\n\n")
 
-	// Process TOML content section by section, adding comments
-	sections := strings.Split(tomlStr, "\n\n")
-	for i, section := range sections {
-		if strings.TrimSpace(section) == "" {
-			continue
+	// Process TOML content section by section, adding comments.
+	// Split on TOML section headers (^\[.*\]$) rather than blank lines,
+	// which is fragile with multi-line values, arrays of tables, and inline tables.
+	sections := splitTOMLSections(tomlStr)
+	nonEmpty := sections[:0]
+	for _, s := range sections {
+		if strings.TrimSpace(s) != "" {
+			nonEmpty = append(nonEmpty, s)
 		}
-
+	}
+	for i, section := range nonEmpty {
 		// Add section comment based on section header
 		sectionName := extractSectionName(section)
 		comment := sectionComment(sectionName, cfg)
@@ -62,15 +66,37 @@ func FormatWithComments(cfg Config) (string, error) {
 			b.WriteString("\n")
 		}
 
-		b.WriteString(section)
-		
+		b.WriteString(strings.TrimRight(section, "\n"))
+
 		// Add separator between sections (but not after last)
-		if i < len(sections)-1 {
+		if i < len(nonEmpty)-1 {
 			b.WriteString("\n\n")
 		}
 	}
 
 	return b.String(), nil
+}
+
+// splitTOMLSections splits TOML content at section headers (lines matching
+// `[...]` or `[[...]]`). The header line is retained with its section.
+// Content preceding the first header is returned as the first element.
+func splitTOMLSections(s string) []string {
+	var sections []string
+	var cur strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		isHeader := strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")
+		if isHeader && cur.Len() > 0 {
+			sections = append(sections, cur.String())
+			cur.Reset()
+		}
+		cur.WriteString(line)
+		cur.WriteString("\n")
+	}
+	if cur.Len() > 0 {
+		sections = append(sections, cur.String())
+	}
+	return sections
 }
 
 // extractSectionName gets the section name from TOML content (e.g., "[vm]" -> "vm")

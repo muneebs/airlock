@@ -29,10 +29,10 @@ func TestMapTrustLevelToProfile(t *testing.T) {
 
 func TestMapResourceLevel(t *testing.T) {
 	tests := []struct {
-		name         string
-		level        ResourceLevel
-		expectedCPU  int
-		expectedMem  string
+		name        string
+		level       ResourceLevel
+		expectedCPU int
+		expectedMem string
 	}{
 		{"lightweight", ResourceLightweight, 1, "2GiB"},
 		{"standard", ResourceStandard, 2, "4GiB"},
@@ -154,7 +154,7 @@ func TestWizardResult_NeedsNetworkLock(t *testing.T) {
 func TestTrustLevels(t *testing.T) {
 	levels := TrustLevels()
 	if len(levels) != 4 {
-		t.Errorf("TrustLevels() returned %d levels, want 4", len(levels))
+		t.Fatalf("TrustLevels() returned %d levels, want 4", len(levels))
 	}
 
 	// Check all expected levels exist
@@ -178,7 +178,7 @@ func TestTrustLevels(t *testing.T) {
 func TestResourceLevels(t *testing.T) {
 	levels := ResourceLevels()
 	if len(levels) != 3 {
-		t.Errorf("ResourceLevels() returned %d levels, want 3", len(levels))
+		t.Fatalf("ResourceLevels() returned %d levels, want 3", len(levels))
 	}
 
 	// Check all levels have valid CPU and memory
@@ -195,7 +195,7 @@ func TestResourceLevels(t *testing.T) {
 func TestNetworkLevels(t *testing.T) {
 	levels := NetworkLevels()
 	if len(levels) != 3 {
-		t.Errorf("NetworkLevels() returned %d levels, want 3", len(levels))
+		t.Fatalf("NetworkLevels() returned %d levels, want 3", len(levels))
 	}
 
 	// Check ongoing has warning

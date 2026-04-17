@@ -103,16 +103,9 @@ func TestFormatWithComments_StartAtLogin(t *testing.T) {
 		t.Fatalf("FormatWithComments() error = %v", err)
 	}
 
-	// When StartAtLogin is true, it should be serialized (omitempty=false)
-	// and appear in the content
+	// StartAtLogin=true is non-zero, so omitempty still emits the key.
 	if !strings.Contains(content, "start_at_login = true") {
 		t.Error("FormatWithComments() missing start_at_login = true when StartAtLogin is true")
-	}
-
-	// Check for comment about auto-start at top level
-	// Since start_at_login is a top-level field, it should have a comment before it
-	if !strings.Contains(content, "Auto-start") {
-		t.Log("Note: Auto-start comment may be missing for top-level fields - this is acceptable")
 	}
 }
 

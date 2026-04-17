@@ -14,24 +14,17 @@ import (
 // Styles for the wizard UI.
 var (
 	titleStyle = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("69"))
-
-	descriptionStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("244"))
+			Bold(true).
+			Foreground(lipgloss.Color("69"))
 
 	warningStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("214")).
-		Bold(true)
-
-	successStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("42")).
-		Bold(true)
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
 )
 
 // SourceInfo holds information about the code source.
 type SourceInfo struct {
-	Path   string
+	Path     string
 	IsGitHub bool
 }
 
@@ -67,7 +60,6 @@ func sanitizeName(name string) string {
 	for i, r := range name {
 		if i == 0 && !isAlpha(r) && r != '_' {
 			b.WriteByte('_')
-			continue
 		}
 		if isAlphaNum(r) || r == '_' || r == '-' || r == '.' {
 			b.WriteRune(r)

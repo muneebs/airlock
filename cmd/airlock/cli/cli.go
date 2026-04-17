@@ -799,16 +799,18 @@ Examples:
 
 			// Detect runtime using injected detector (no concrete import)
 			var runtime string
-			if result.Source != "" {
+			if result.Source != "" && deps.Detector != nil {
 				detected, err := deps.Detector.Detect(result.Source)
 				if err == nil {
 					runtime = string(detected.Type)
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Note: could not auto-detect runtime: %v\n", err)
 				}
 			}
 
 			// Save config if requested
 			wizardCfg := result.ToConfig(runtime)
-			
+
 			if result.SaveConfig {
 				// Determine target directory for config
 				var configDir string
@@ -817,8 +819,11 @@ Examples:
 					configDir = "."
 				} else {
 					configDir = result.Source
+					if err := os.MkdirAll(configDir, 0755); err != nil {
+						return fmt.Errorf("create config directory: %w", err)
+					}
 				}
-				
+
 				if err := config.Save(configDir, wizardCfg); err != nil {
 					return fmt.Errorf("save configuration: %w", err)
 				}

@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"os/exec"
 	"testing"
 
 	"github.com/muneebs/airlock/internal/api"
@@ -10,6 +11,9 @@ import (
 // field on Dependencies must be non-nil after Assemble so the cli layer
 // never sees a nil interface (PRINCIPLES.md §5 DIP).
 func TestAssembleWiresAllInterfaces(t *testing.T) {
+	if _, err := exec.LookPath("limactl"); err != nil {
+		t.Skip("limactl not installed; skipping bootstrap smoke test")
+	}
 	deps, err := Assemble()
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -41,6 +45,9 @@ func TestAssembleWiresAllInterfaces(t *testing.T) {
 // TestAssembleInterfaceTypes pins the interface return types so a future
 // refactor cannot silently narrow the contract (LSP).
 func TestAssembleInterfaceTypes(t *testing.T) {
+	if _, err := exec.LookPath("limactl"); err != nil {
+		t.Skip("limactl not installed; skipping bootstrap smoke test")
+	}
 	deps, err := Assemble()
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)

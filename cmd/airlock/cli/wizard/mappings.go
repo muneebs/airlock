@@ -187,14 +187,14 @@ func IsInsecureNetwork(level NetworkLevel) bool {
 
 // WizardResult contains the final configuration from the wizard.
 type WizardResult struct {
-	Source       string
-	Name         string
-	TrustLevel   TrustLevel
+	Source        string
+	Name          string
+	TrustLevel    TrustLevel
 	ResourceLevel ResourceLevel
-	NetworkLevel NetworkLevel
-	StartAtLogin bool
-	SaveConfig   bool
-	CreateNow    bool
+	NetworkLevel  NetworkLevel
+	StartAtLogin  bool
+	SaveConfig    bool
+	CreateNow     bool
 }
 
 // ToSandboxSpec converts wizard result to API sandbox spec.
@@ -202,6 +202,7 @@ func (r *WizardResult) ToSandboxSpec(runtime string) api.SandboxSpec {
 	cpu, memory := MapResourceLevel(r.ResourceLevel)
 	profile := MapTrustLevelToProfile(r.TrustLevel)
 
+	defaults := config.Defaults()
 	return api.SandboxSpec{
 		Name:    r.Name,
 		Source:  r.Source,
@@ -209,33 +210,25 @@ func (r *WizardResult) ToSandboxSpec(runtime string) api.SandboxSpec {
 		Profile: profile,
 		CPU:     &cpu,
 		Memory:  memory,
-		Disk:    "20GiB",
-		Ports:   "3000:9999",
+		Disk:    defaults.VM.Disk,
+		Ports:   defaults.Dev.Ports,
 	}
 }
 
-// ToConfig converts wizard result to Config struct.
+// ToConfig converts wizard result to Config struct. Unspecified fields
+// inherit canonical values from config.Defaults() so callers (e.g. the
+// provisioner) see sensible defaults like NodeVersion and Disk.
 func (r *WizardResult) ToConfig(runtime string) config.Config {
 	cpu, memory := MapResourceLevel(r.ResourceLevel)
 	profile := MapTrustLevelToProfile(r.TrustLevel)
 
-	return config.Config{
-		VM: config.VMConfig{
-			CPU:    cpu,
-			Memory: memory,
-			Disk:   "20GiB",
-		},
-		Security: config.SecurityConfig{
-			Profile: profile,
-		},
-		Dev: config.DevConfig{
-			Ports: "3000:9999",
-		},
-		Runtime: config.RuntimeConfig{
-			Type: runtime,
-		},
-		StartAtLogin: r.StartAtLogin,
-	}
+	cfg := config.Defaults()
+	cfg.VM.CPU = cpu
+	cfg.VM.Memory = memory
+	cfg.Security.Profile = profile
+	cfg.Runtime.Type = runtime
+	cfg.StartAtLogin = r.StartAtLogin
+	return cfg
 }
 
 // NeedsNetworkLock returns true if the network should be locked after setup.

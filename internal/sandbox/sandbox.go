@@ -176,7 +176,7 @@ func resolveMountHostPath(source string) string {
 	}
 	abs, err := filepath.Abs(source)
 	if err != nil {
-		return source
+		return ""
 	}
 	return abs
 }
