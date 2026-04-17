@@ -880,13 +880,22 @@ Examples:
 					},
 				})
 
-				// Lock network if needed
-				if result.NeedsNetworkLock() {
+				// Enforce user's network choice over profile default.
+				switch result.NetworkLevel {
+				case wizard.NetworkNone, wizard.NetworkDownloads:
 					phases = append(phases, tui.Phase{
 						Label:     "Locking network",
 						DoneLabel: "Network locked",
 						Action: func() error {
 							return deps.Network.Lock(ctx, spec.Name)
+						},
+					})
+				case wizard.NetworkOngoing:
+					phases = append(phases, tui.Phase{
+						Label:     "Unlocking network",
+						DoneLabel: "Network unlocked",
+						Action: func() error {
+							return deps.Network.Unlock(ctx, spec.Name)
 						},
 					})
 				}

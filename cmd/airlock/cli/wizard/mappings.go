@@ -203,16 +203,18 @@ func (r *WizardResult) ToSandboxSpec(runtime string) api.SandboxSpec {
 	profile := MapTrustLevelToProfile(r.TrustLevel)
 
 	defaults := config.Defaults()
+	lockAfter := r.NetworkLevel != NetworkOngoing
 	return api.SandboxSpec{
-		Name:         r.Name,
-		Source:       r.Source,
-		Runtime:      runtime,
-		Profile:      profile,
-		CPU:          &cpu,
-		Memory:       memory,
-		Disk:         defaults.VM.Disk,
-		Ports:        defaults.Dev.Ports,
-		StartAtLogin: r.StartAtLogin,
+		Name:                  r.Name,
+		Source:                r.Source,
+		Runtime:               runtime,
+		Profile:               profile,
+		CPU:                   &cpu,
+		Memory:                memory,
+		Disk:                  defaults.VM.Disk,
+		Ports:                 defaults.Dev.Ports,
+		StartAtLogin:          r.StartAtLogin,
+		LockNetworkAfterSetup: &lockAfter,
 	}
 }
 

@@ -96,4 +96,9 @@ type SandboxSpec struct {
 
 	// StartAtLogin requests the VM be started automatically at user login.
 	StartAtLogin bool `json:"start_at_login,omitempty" yaml:"start_at_login,omitempty"`
+
+	// LockNetworkAfterSetup overrides the profile's LockAfterSetup decision
+	// when non-nil. Set by callers (e.g. the wizard) that let the user pick
+	// network behavior independently of the security profile.
+	LockNetworkAfterSetup *bool `json:"lock_network_after_setup,omitempty" yaml:"lock_network_after_setup,omitempty"`
 }
