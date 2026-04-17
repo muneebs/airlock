@@ -348,8 +348,12 @@ func (p *LimaProvider) Shell(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
+	// limactl shell logs in as the host user by default, which cannot access
+	// /home/airlock/projects/<name>. Switch to the airlock user via sudo -iu
+	// and cd into the project mount before handing off to an interactive bash.
 	workdir := "/home/airlock/projects/" + name
-	cmd := exec.CommandContext(ctx, p.limactlPath, "shell", "--workdir", workdir, name)
+	inner := fmt.Sprintf("cd %s && exec bash", shellEscape(workdir))
+	cmd := exec.CommandContext(ctx, p.limactlPath, "shell", "--workdir", "/", name, "--", "sudo", "-iu", "airlock", "bash", "-c", inner)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
