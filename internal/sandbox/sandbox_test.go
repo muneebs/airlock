@@ -78,6 +78,17 @@ func (f *fakeProvider) IsRunning(_ context.Context, name string) (bool, error) {
 	return running, nil
 }
 
+func (f *fakeProvider) Status(_ context.Context, name string) (string, error) {
+	running, ok := f.vms[name]
+	if !ok {
+		return "", nil
+	}
+	if running {
+		return "Running", nil
+	}
+	return "Stopped", nil
+}
+
 func (f *fakeProvider) Exec(_ context.Context, name string, cmd []string) (string, error) {
 	return f.execOut, f.execErr
 }
@@ -1041,5 +1052,96 @@ func TestCreateConcurrentDuplicate(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected exactly 1 sandbox named 'concurrent-dupe', got %d", count)
+	}
+}
+
+// TestCreateReplacesErroredSandbox verifies that re-running Create on a name
+// whose existing state is "errored" succeeds by first tearing down any
+// orphaned VM from the prior failed attempt.
+func TestCreateReplacesErroredSandbox(t *testing.T) {
+	mgr, provider, _, _, _ := newTestManager(t)
+
+	spec := api.SandboxSpec{
+		Name:    "flaky",
+		Profile: "cautious",
+		CPU:     intPtr(2),
+	}
+
+	if _, err := mgr.Create(context.Background(), spec); err != nil {
+		t.Fatalf("first Create() error: %v", err)
+	}
+
+	// Simulate a previous attempt that left state=errored with a live VM.
+	mgr.mu.Lock()
+	mgr.sandboxes["flaky"].State = api.StateErrored
+	_ = mgr.save()
+	mgr.mu.Unlock()
+
+	if _, ok := provider.vms["flaky"]; !ok {
+		t.Fatal("precondition: VM must exist before errored replace")
+	}
+
+	info, err := mgr.Create(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("replace errored Create() error: %v", err)
+	}
+	if info.State != api.StateRunning {
+		t.Errorf("expected state running, got %s", info.State)
+	}
+	if _, ok := provider.vms["flaky"]; !ok {
+		t.Error("expected fresh VM to exist after errored replace")
+	}
+}
+
+// TestCreateReplacesStuckCreatingSandbox verifies that re-running Create on
+// a name left in "creating" state (ctrl-c, crash) succeeds by cleaning up
+// and retrying.
+func TestCreateReplacesStuckCreatingSandbox(t *testing.T) {
+	mgr, provider, _, _, _ := newTestManager(t)
+
+	spec := api.SandboxSpec{
+		Name:    "stuck",
+		Profile: "cautious",
+		CPU:     intPtr(2),
+	}
+
+	if _, err := mgr.Create(context.Background(), spec); err != nil {
+		t.Fatalf("first Create() error: %v", err)
+	}
+
+	mgr.mu.Lock()
+	mgr.sandboxes["stuck"].State = api.StateCreating
+	_ = mgr.save()
+	mgr.mu.Unlock()
+
+	info, err := mgr.Create(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("replace creating Create() error: %v", err)
+	}
+	if info.State != api.StateRunning {
+		t.Errorf("expected state running, got %s", info.State)
+	}
+	if _, ok := provider.vms["stuck"]; !ok {
+		t.Error("expected fresh VM to exist after creating-state replace")
+	}
+}
+
+// TestCreateAlreadyExistsNotReplacedWhenRunning verifies ErrAlreadyExists
+// still fires when the prior state is not errored.
+func TestCreateAlreadyExistsNotReplacedWhenRunning(t *testing.T) {
+	mgr, _, _, _, _ := newTestManager(t)
+
+	spec := api.SandboxSpec{
+		Name:    "steady",
+		Profile: "cautious",
+		CPU:     intPtr(2),
+	}
+	if _, err := mgr.Create(context.Background(), spec); err != nil {
+		t.Fatalf("first Create() error: %v", err)
+	}
+
+	_, err := mgr.Create(context.Background(), spec)
+	if _, ok := err.(ErrAlreadyExists); !ok {
+		t.Errorf("expected ErrAlreadyExists for running sandbox, got %T: %v", err, err)
 	}
 }

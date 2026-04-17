@@ -1,13 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-# Airlock Installer
-# Usage: curl -fsSL <raw-url>/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/muneebs/airlock/main/install.sh | bash
 
+REPO="muneebs/airlock"
 INSTALL_DIR="${HOME}/.local/bin"
-REPO_URL="https://raw.githubusercontent.com/muneebs/airlock/main/bin/airlock"
+BINARY="airlock"
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -18,63 +17,82 @@ info()  { echo -e "${GREEN}[+]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[x]${NC} $1"; exit 1; }
 
-# --- Preflight checks ---
+ARCH="$(uname -m)"
+case "${ARCH}" in
+    x86_64)  GOARCH="x86_64" ;;
+    arm64)   GOARCH="arm64" ;;
+    *)       error "Unsupported architecture: ${ARCH}" ;;
+esac
 
-[[ "$(uname)" == "Darwin" ]] || error "macOS required. Lima uses Apple Virtualization framework."
+[[ "$(uname)" == "Darwin" ]] || error "macOS required. airlock uses Apple Virtualization framework via Lima."
 
-if ! command -v brew &>/dev/null; then
-    error "Homebrew not found. Install from https://brew.sh first."
+# --- sha256 tool discovery ---
+
+if command -v shasum >/dev/null 2>&1; then
+    SHA256="shasum -a 256"
+elif command -v sha256sum >/dev/null 2>&1; then
+    SHA256="sha256sum"
+else
+    error "Neither shasum nor sha256sum found. Cannot verify download integrity."
 fi
 
-# --- Install dependencies ---
+# --- Find latest release ---
 
-install_if_missing() {
-    local cmd="$1" pkg="${2:-$1}"
-    if command -v "$cmd" &>/dev/null; then
-        info "$cmd already installed"
-    else
-        info "Installing $pkg..."
-        brew install "$pkg"
-    fi
+get_latest_version() {
+    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+        | grep '"tag_name"' \
+        | head -1 \
+        | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
 }
 
-install_if_missing lima
-install_if_missing jq
-install_if_missing yq
-if ! yq --version 2>&1 | grep -q 'version v4'; then
-    warn "yq found but may not be v4. TOML support requires 'brew install yq' (mikefarah/yq)."
+VERSION="${INSTALL_VERSION:-}"
+if [[ -z "${VERSION}" ]]; then
+    VERSION="$(get_latest_version)"
 fi
 
-# --- Install airlock binary ---
-
-mkdir -p "$INSTALL_DIR"
-
-if [[ -t 0 ]]; then
-    # Interactive: try downloading from repo
-    info "Downloading airlock..."
-    if curl -fsSL "$REPO_URL" -o "${INSTALL_DIR}/airlock"; then
-        info "Downloaded from repository"
-    else
-        warn "Download failed. Checking for local copy..."
-        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        if [[ -f "${SCRIPT_DIR}/bin/airlock" ]]; then
-            cp "${SCRIPT_DIR}/bin/airlock" "${INSTALL_DIR}/airlock"
-            info "Copied from local repo"
-        else
-            error "No airlock binary found. Clone the repo and run install.sh locally."
-        fi
-    fi
-else
-    # Piped (curl | bash): download from repo
-    info "Downloading airlock..."
-    curl -fsSL "$REPO_URL" -o "${INSTALL_DIR}/airlock" \
-        || error "Download failed. Check URL and network."
+if [[ -z "${VERSION}" ]]; then
+    error "Could not determine latest version. Set INSTALL_VERSION or check https://github.com/${REPO}/releases"
 fi
 
-chmod +x "${INSTALL_DIR}/airlock"
-info "Installed to ${INSTALL_DIR}/airlock"
+VERSION="${VERSION#v}"
 
-# --- Ensure PATH includes install dir ---
+FILENAME="airlock_${VERSION}_darwin_${GOARCH}.tar.gz"
+BASE_URL="https://github.com/${REPO}/releases/download/v${VERSION}"
+ARCHIVE_URL="${BASE_URL}/${FILENAME}"
+CHECKSUMS_URL="${BASE_URL}/checksums.txt"
+
+# --- Isolated scratch dir (avoid symlink/race in /tmp) ---
+
+WORKDIR="$(mktemp -d -t airlock-install.XXXXXX)"
+cleanup() { rm -rf "${WORKDIR}"; }
+trap cleanup EXIT
+
+mkdir -p "${INSTALL_DIR}"
+
+info "Downloading airlock v${VERSION} for macOS ${GOARCH}..."
+if ! curl -fsSL "${ARCHIVE_URL}" -o "${WORKDIR}/${FILENAME}"; then
+    error "Download failed from ${ARCHIVE_URL}. Check the version and try again."
+fi
+
+info "Fetching checksums..."
+if ! curl -fsSL "${CHECKSUMS_URL}" -o "${WORKDIR}/checksums.txt"; then
+    error "Checksum download failed from ${CHECKSUMS_URL}."
+fi
+
+info "Verifying checksum..."
+EXPECTED="$(grep " ${FILENAME}\$" "${WORKDIR}/checksums.txt" | awk '{print $1}')"
+if [[ -z "${EXPECTED}" ]]; then
+    error "No checksum entry for ${FILENAME} in checksums.txt."
+fi
+ACTUAL="$(${SHA256} "${WORKDIR}/${FILENAME}" | awk '{print $1}')"
+if [[ "${EXPECTED}" != "${ACTUAL}" ]]; then
+    error "Checksum mismatch for ${FILENAME}. Expected ${EXPECTED}, got ${ACTUAL}."
+fi
+
+tar -xzf "${WORKDIR}/${FILENAME}" -C "${WORKDIR}" "${BINARY}"
+install -m 0755 "${WORKDIR}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+
+info "Installed to ${INSTALL_DIR}/${BINARY}"
 
 add_to_path() {
     local shell_rc="$1"
@@ -96,17 +114,11 @@ if ! echo "$PATH" | grep -q "${HOME}/.local/bin"; then
     warn "Restart your shell or run: export PATH=\"\${HOME}/.local/bin:\${PATH}\""
 fi
 
-# --- Verify ---
-
 echo ""
-info "${BOLD}Installation complete!${NC}"
+info "${BOLD}airlock v${VERSION} installed!${NC}"
 echo ""
 echo -e "  Next steps:"
-echo -e "    ${BOLD}airlock setup${NC}    Create the Lima VM (one-time)"
-echo -e "    ${BOLD}airlock help${NC}     Show all commands"
-echo ""
-echo -e "  Quick start after setup:"
-echo -e "    ${BOLD}airlock npm ./my-project${NC}        Audit packages"
-echo -e "    ${BOLD}airlock pnpm ./my-app dev${NC}       Dev mode with mount"
-echo -e "    ${BOLD}airlock status${NC}                  Check VM state"
+echo -e "    ${BOLD}airlock setup${NC}       Create a Lima VM (one-time)"
+echo -e "    ${BOLD}airlock sandbox ./dir${NC}  Create an isolated sandbox"
+echo -e "    ${BOLD}airlock help${NC}         Show all commands"
 echo ""

@@ -1,0 +1,71 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    main: .
+    binary: airlock
+    ldflags:
+      - -s -w -X github.com/muneebs/airlock/cmd/airlock/cli.version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}arm64
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  name_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^chore:"
+      - "^ci:"
+      - "^test:"
+      - "merge conflict"
+      - "merge branch"
+  groups:
+    - title: Features
+      order: 0
+      regexp: '^feat'
+    - title: Bug Fixes
+      order: 1
+      regexp: '^fix'
+    - title: Documentation
+      order: 2
+      regexp: '^docs'
+    - title: Refactoring
+      order: 3
+      regexp: '^refactor'
+    - title: Other Changes
+      order: 999
+
+release:
+  github:
+    owner: muneebs
+    name: airlock
+  header: |-
+    **Installation:** `curl -fsSL https://raw.githubusercontent.com/muneebs/airlock/main/install.sh | bash`

@@ -47,8 +47,8 @@ func TestLockAppliesCorrectPolicy(t *testing.T) {
 	if !policy.AllowDNS {
 		t.Error("Lock() should set AllowDNS=true")
 	}
-	if policy.AllowEstablished {
-		t.Error("Lock() should set AllowEstablished=false")
+	if !policy.AllowEstablished {
+		t.Error("Lock() must set AllowEstablished=true to preserve the lima ssh reply path")
 	}
 
 	if len(*cmds) == 0 {

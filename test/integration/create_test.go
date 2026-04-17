@@ -188,3 +188,39 @@ func TestCreateEmptyNameFails(t *testing.T) {
 		t.Error("expected error for empty name")
 	}
 }
+
+// TestProviderCreateRejectsExisting verifies the pre-exist check in
+// LimaProvider.Create short-circuits before invoking `limactl create`
+// when a VM with the same name already exists.
+func TestProviderCreateRejectsExisting(t *testing.T) {
+	h := newHarness(t)
+
+	spec := api.VMSpec{
+		Name:   "preexist",
+		OS:     "Linux",
+		Arch:   "default",
+		CPU:    2,
+		Memory: "4GiB",
+		Disk:   "20GiB",
+	}
+
+	if err := h.Provider.Create(h.ctx(), spec); err != nil {
+		t.Fatalf("first Create() error: %v", err)
+	}
+
+	h.resetCalls()
+
+	err := h.Provider.Create(h.ctx(), spec)
+	if err == nil {
+		t.Fatal("expected error creating duplicate VM")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected 'already exists' in error, got: %v", err)
+	}
+
+	for _, c := range h.calls() {
+		if strings.HasPrefix(c, "create ") || strings.Contains(c, " create ") {
+			t.Errorf("second Create must not invoke 'limactl create', got call: %q", c)
+		}
+	}
+}

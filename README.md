@@ -1,113 +1,114 @@
 # airlock [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A CLI tool that runs npm/pnpm/bun projects inside a Lima VM on macOS. The VM has no access to your home directory, SSH keys, or anything else on your host. Only directories you explicitly mount get exposed — the project you pass on the command line, plus any extras declared in `airlock.toml`.
-
-Built for two problems:
-1. Vetting npm packages before trusting them with your filesystem
-2. Running dev environments in isolation so a compromised dependency can't reach beyond your project
-
----
+Run untrusted software in isolated Lima VMs on macOS. Each sandbox gets its own VM with configurable network and filesystem restrictions — no access to your home directory, SSH keys, or anything you don't explicitly allow.
 
 ## Install
 
-**One-liner:**
+**One-liner (recommended):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/muneebs/airlock/main/install.sh | bash
 ```
 
-This installs `lima`, `jq`, `yq`, and the `airlock` CLI to `~/.local/bin`.
+Downloads a pre-built binary from [GitHub Releases](https://github.com/muneebs/airlock/releases).
 
-**From source:**
+**From source (requires Go 1.24):**
 
 ```bash
 git clone https://github.com/muneebs/airlock
 cd airlock
-bash install.sh
+make install
 ```
 
-**Requirements:** macOS (Apple Silicon or Intel). `yq v4` is only required if you use `airlock.toml`.
+Installs to `$GOPATH/bin/airlock` — ensure that directory is on your `PATH`. The one-liner above installs to `~/.local/bin/airlock` instead.
 
----
+**Prerequisites:** macOS (Apple Silicon or Intel) with [Lima](https://github.com/lima-vm/lima) installed.
 
 ## Quick start
 
 ```bash
-# Create the VM (one-time — installs Node.js 22, pnpm, bun, Claude Code)
+# Create and provision the VM (one-time)
 airlock setup
 
-# Audit a project's dependencies without running any install scripts
-airlock npm ./my-project
+# Create a sandbox for a local project
+airlock sandbox ./my-project
 
-# Mount a project and start developing inside the VM
-airlock pnpm ./my-project dev
+# Create a sandbox from a GitHub repo
+airlock sandbox gh:user/repo
 
-# Run Claude Code airlocked to a single project directory
-airlock claude ./my-project
+# Run a command inside it
+airlock run my-project -- npm test
+
+# Shell into it
+airlock shell my-project
+
+# Lock the network (block all outbound except DNS)
+airlock lock my-project
+
+# Check status
+airlock status my-project
+
+# Reset to clean baseline
+airlock reset my-project
+
+# Delete everything
+airlock destroy my-project
 ```
 
----
+## Commands
 
-## Security modes
+| Command | Description |
+|---------|-------------|
+| `airlock setup [name]` | Create and provision a VM, then take a clean snapshot |
+| `airlock sandbox <path-or-url>` | Create an isolated sandbox |
+| `airlock run <name> <command...>` | Run a command inside a sandbox |
+| `airlock shell [name]` | Open an interactive shell inside the VM |
+| `airlock list` | Show all sandboxes |
+| `airlock status [name]` | Show sandbox status, mounts, and network state |
+| `airlock stop [name]` | Stop a sandbox |
+| `airlock reset [name]` | Reset sandbox to its clean snapshot |
+| `airlock destroy [name]` | Delete a sandbox and all its data |
+| `airlock lock [name]` | Block all outbound network traffic (DNS still works) |
+| `airlock unlock [name]` | Re-enable outbound network traffic |
+| `airlock remove <mount> --sandbox <name>` | Unmount a project from a sandbox |
+| `airlock config` | Show resolved configuration |
+| `airlock profile` | List available security profiles |
+| `airlock version` | Print version |
 
-### audit (default)
+Commands that accept a `[name]` argument default to `airlock` if omitted.
 
-No host mounts. Copies `package.json` and the lockfile into the VM, installs without lifecycle scripts, runs `npm audit`, and shows which packages have install scripts. Nothing from the VM can touch your host filesystem.
+### Sandbox creation flags
 
 ```bash
-airlock npm ./sketchy-lib
+airlock sandbox ./my-project \
+  --profile cautious \     # Security profile: strict, cautious, dev, trusted
+  --runtime node \          # Override auto-detected runtime
+  --docker \                # Allow Docker access inside the sandbox
+  --ephemeral \             # Mark as ephemeral (metadata only)
+  --ports 3000:9999 \       # Port range to forward
+  --name my-sandbox         # Custom sandbox name
 ```
 
-### full
+Runtime auto-detection checks for: `package.json` (node), `go.mod` (go), `Cargo.toml` (rust), `.python-version` / `requirements.txt` (python), `Dockerfile` (docker), `compose.yml` / `compose.yaml` (compose), `Makefile` (make), `*.sln` / `*.csproj` (dotnet).
 
-Same isolation as audit, but installs with lifecycle scripts enabled. After install, the network gets locked (iptables DROP on OUTPUT). You get dropped into a shell to observe what the scripts did and whether anything tries to phone home.
+GitHub URL formats: `gh:user/repo` or `https://github.com/user/repo` — the repo name becomes the sandbox name.
 
-```bash
-airlock npm ./sketchy-lib full
-```
+## Security profiles
 
-### dev
+Profiles encode security policies so you don't have to be an expert. The default is `cautious`.
 
-Mounts your project directory into the VM read-write via virtiofs. Changes sync both ways in real time. Ports 3000-9999 are forwarded to localhost by default.
+| Profile | Host mounts | Network | Docker | Project dir | When to use |
+|---------|------------|---------|--------|-------------|-------------|
+| `strict` | None | Locked after setup | No | Read-only | Completely untrusted software |
+| `cautious` | Read-only | Locked after setup | No | Read-only | Unknown software (default) |
+| `dev` | Read-write | Open | Yes | Writable | Software you trust for development |
+| `trusted` | Read-write | Open | Yes | Writable | Software you author or fully trust |
 
-```bash
-airlock pnpm ./my-app dev
-airlock pnpm ./my-app dev 8080:8080          # custom port range
-airlock pnpm ./my-app dev 3000:3000 "pnpm dev"  # run command immediately
-```
+Network locking uses iptables inside the VM. `Lock` blocks all outbound connections except DNS. `Unlock` restores normal access. `LockAfterSetup: true` (strict, cautious) means the network is locked immediately after the sandbox is created.
 
-Multiple projects can be mounted simultaneously — each gets its own path at `/home/airlock/projects/<name>`:
+## Configuration
 
-```bash
-airlock pnpm ./frontend dev
-airlock pnpm ./api dev 8080:8080
-
-airlock shell
-# cd projects/frontend && pnpm dev
-# cd ../api && pnpm test
-
-airlock remove api   # unmount when done
-```
-
-Adding a project restarts the VM (~10 seconds) since Lima can't hot-add mounts.
-
-### claude
-
-Mounts the project directory and runs Claude Code inside the VM. Network stays open (Claude Code needs API access). Auth credentials are copied from your host `~/.claude` into the VM, but the VM can't modify your host auth config.
-
-Claude Code can read and write files in the mounted project. It has zero access to the rest of your filesystem.
-
-```bash
-airlock claude .
-airlock claude ./my-app
-airlock claude ./my-app --print "fix the failing tests"
-```
-
----
-
-## Per-project configuration
-
-Create an `airlock.toml` in your project directory to set defaults for ports, startup command, extra mounts, and VM resources. All fields are optional — omit any you don't need.
+Create `airlock.toml` or `airlock.yaml` in your project directory. All fields are optional — defaults are used for anything you omit.
 
 ```toml
 [vm]
@@ -116,144 +117,138 @@ memory = "4GiB"
 disk = "20GiB"
 node_version = 22
 
+[security]
+profile = "cautious"        # strict, cautious, dev, trusted
+
 [dev]
-ports = "3000:3000"
-command = "pnpm dev"
+ports = "3000:9999"         # port range forwarded to localhost
+command = "npm run dev"     # default run command
+
+[runtime]
+type = "node"               # override auto-detection: node, go, rust, python, docker, compose, make, dotnet
+docker = false
 
 [services]
-compose = "./docker-compose.yml"   # started automatically before dev command
+compose = "./docker-compose.yml"   # Docker Compose file to start automatically
 
 [[mounts]]
-path = "./api"
+path = "./api"              # required: path relative to config file
 
 [[mounts]]
 path = "./shared"
-writable = false        # read-only (default: true)
-
-[[mounts]]
-path = "./data"
-writable = true
-inotify = true          # file-watch events in VM (Lima ≥ 0.21, default: false)
+writable = false            # default: true
+inotify = true              # default: false; enables file-watch events (Lima ≥ 0.21)
 ```
 
-**Mount options:**
+Precedence: CLI flags > config file > built-in defaults.
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `path` | — | Required. Path relative to `airlock.toml` |
-| `writable` | `true` | `false` = read-only inside VM |
-| `inotify` | `false` | `true` = enable inotify file-watch events (Lima ≥ 0.21). Needed for hot-reload tools that watch via inotify rather than polling |
+YAML format (`airlock.yaml` or `airlock.yml`):
 
-When `[services] compose` is set, `airlock dev` runs `docker compose up -d` inside the VM before starting your app. Services are reachable from your app code at `localhost:<port>` as normal. To also reach a service from your host (e.g. a DB client), include its port in `[dev] ports`.
+```yaml
+vm:
+  cpu: 2
+  memory: "4GiB"
+  disk: "20GiB"
 
-CLI arguments override config values, which override built-in defaults:
+security:
+  profile: "cautious"
 
-```
-CLI arg  >  airlock.toml  >  built-in default
-```
+dev:
+  ports: "3000:9999"
 
-**Monorepos:** use `airlock.toml` instead of long CLI invocations:
-
-```toml
-[dev]
-ports = "3000:9999"
-command = "pnpm dev"
+mounts:
+  - path: "./shared"
+    writable: false
 ```
 
-```bash
-airlock pnpm ./my-monorepo dev
-```
+### Config reference
 
-pnpm workspaces, turborepo, and nx all work since the entire repo is mounted.
-
----
+| Section | Field | Type | Default | Description |
+|---------|-------|------|---------|-------------|
+| `vm` | `cpu` | int | `2` | Number of CPU cores |
+| `vm` | `memory` | string | `"4GiB"` | VM memory allocation (supports KiB, MiB, GiB) |
+| `vm` | `disk` | string | `"20GiB"` | VM disk size |
+| `vm` | `node_version` | int | `22` | Node.js major version to install |
+| `security` | `profile` | string | `"cautious"` | Security profile name |
+| `dev` | `ports` | string | `"3000:9999"` | Port range to forward |
+| `dev` | `command` | string | — | Default command to run |
+| `runtime` | `type` | string | auto-detected | Override runtime type |
+| `runtime` | `docker` | bool | `false` | Allow Docker in sandbox |
+| `services` | `compose` | string | — | Path to Docker Compose file (must be relative) |
+| `mounts[]` | `path` | string | — | Required. Relative path to mount |
+| `mounts[]` | `writable` | bool | `true` | Whether mount is writable in VM |
+| `mounts[]` | `inotify` | bool | `false` | Enable inotify file-watch events |
 
 ## Network control
 
 ```bash
-airlock lock     # block all outbound traffic (DNS still works)
-airlock unlock   # re-enable outbound
+airlock lock my-sandbox     # Block all outbound (DNS still works)
+airlock unlock my-sandbox   # Re-enable outbound
 ```
 
-`full` mode locks the network automatically after install. `dev` and `claude` modes leave it open.
+Network policies are enforced per-sandbox via iptables inside the VM. Locking applies:
 
----
+- DNS (UDP port 53) is always allowed
+- Reply packets on already-established outbound connections (ESTABLISHED,RELATED on the OUTPUT chain) are allowed in `strict` and `cautious` profiles
+- All other outbound traffic is blocked when locked
 
-## Commands
-
-```
-airlock setup                                    Create and provision the VM
-
-airlock <npm|pnpm|bun> <dir>                     Audit (isolated, no host mounts)
-airlock <npm|pnpm|bun> <dir> full                Install with scripts + locked network
-airlock <npm|pnpm|bun> <dir> dev                 Dev mode (mount + ports)
-airlock <npm|pnpm|bun> <dir> dev <ports>         Custom port range
-airlock <npm|pnpm|bun> <dir> dev <ports> <cmd>   Dev mode + run command immediately
-
-airlock claude <dir>                             Run Claude Code (airlocked)
-airlock claude <dir> <args>                      Run Claude Code with arguments
-
-airlock list                                     Show mounted projects
-airlock remove <name>                            Unmount a project
-airlock shell                                    Shell into the VM (projects dir)
-airlock run <command>                            Run a command in the projects dir
-airlock lock                                     Block outbound network
-airlock unlock                                   Re-enable outbound network
-airlock status                                   VM status, mounts, network state
-airlock stop                                     Stop the VM
-airlock reset                                    Reset to clean baseline (clears all mounts)
-airlock destroy                                  Delete everything
-airlock version                                  Print version
-```
-
----
-
-## Reference
-
-### What's in the VM
-
-`airlock setup` creates an Ubuntu 24.04 VM using Apple's Virtualization.framework and installs:
-
-- Node.js 22 LTS (configurable via `airlock.toml`)
-- pnpm, bun
-- Docker CE (with `docker compose` v2)
-- Claude Code
-- git, curl, jq, iptables
-
-bun and Claude Code installs are non-fatal. If they fail, npm and pnpm still work.
-
-### How it works
-
-Lima creates a lightweight Linux VM on macOS using Apple's Hypervisor.framework — real hypervisor-level isolation, not container-level process isolation like Docker.
-
-airlock manages the VM lifecycle and a mount registry at `~/.airlock/mounts.json`. When you add or remove projects, it rewrites `~/.lima/npm-airlock/lima.yaml` and restarts the VM. Host directories are mounted via virtiofs at their original paths inside the VM, with symlinks at `/home/airlock/projects/<name>` for convenience.
-
-A clean baseline is saved at setup time. `airlock reset` restores the VM to that state and clears all mounts.
-
-### Files
+## Architecture
 
 ```
-~/.local/bin/airlock               The CLI script
-~/.lima/npm-airlock/               Lima VM instance
-~/.lima/npm-airlock-clean/         Clean baseline for reset
-~/.airlock/mounts.json             Mount registry
-<project>/airlock.toml             Optional per-project config
+cmd/airlock/cli/         CLI entry point (Cobra commands, dependency injection)
+internal/api/            Interface contracts (SandboxManager, Provider, NetworkController, etc.)
+internal/sandbox/        Orchestrator — Create, Run, Stop, Destroy, Reset, List, Status
+internal/vm/lima/        Lima VM provider (limactl wrapper, config generation, snapshots)
+internal/network/        Network policy controller (iptables via limactl)
+internal/mount/          Mount registry (JSON-backed persistence)
+internal/detect/         Runtime auto-detection (Node, Go, Rust, Python, Docker, etc.)
+internal/profile/        Security profile registry (strict, cautious, dev, trusted)
+internal/config/         TOML/YAML config loading, validation, defaults
+internal/sysutil/        Host resource detection (CPU, memory, disk)
+test/integration/        End-to-end tests with fake limactl
 ```
 
-### See also
+All packages communicate through interfaces defined in `internal/api/`. The CLI never imports concrete types in command handlers — dependencies are injected through the `Dependencies` struct with interface fields only (Dependency Inversion Principle).
 
-**[bun-security-scanner](https://github.com/muneebs/bun-security-scanner)** — a Bun security scanner that checks dependencies against [Google's OSV database](https://osv.dev) before they get installed. Runs transparently on every `bun install` via `bunfig.toml`. Complements airlock's VM-level isolation with package-level vulnerability scanning at install time.
+Each sandbox gets its own Lima VM (`airlock-<name>`). State is persisted in `~/.airlock/sandboxes.json` and `~/.airlock/mounts.json`. A clean snapshot is taken during `setup` and `reset` restores the VM to that baseline.
 
-```toml
-# bunfig.toml
-[install.security]
-scanner = "@nebzdev/bun-security-scanner"
+### Data flow
+
+```
+airlock sandbox ./project
+  → CLI validates args, resolves config
+  → Manager.Create(spec)
+    → detect runtime → resolve profile → validate resources
+    → Provider.Create (limactl create + start)
+    → NetworkController.ApplyPolicy (iptables rules)
+    → MountManager.Register (JSON persistence)
+  → returns SandboxInfo
 ```
 
-### Limitations
+## Development
 
-- macOS only (Lima with vz requires Apple's Virtualization.framework)
-- Adding/removing mounts requires a VM restart (~10s)
-- The `airlock` user's UID is mapped to your host UID so file permissions work, but this can conflict if the Lima default user already has that UID
-- `audit` and `full` modes copy only `package.json`, the lockfile, and config files — not source code. These modes are for package vetting, not running the project.
-- `airlock.toml` requires yq v4 (mikefarah). If yq is missing and a config file is present, airlock exits with an error pointing to `install.sh`.
+```bash
+make build          # Build the binary
+make test           # Run all tests
+make test-unit      # Run unit tests only
+make test-integration # Run integration tests only
+make vet            # Run go vet
+make fmt            # Check formatting
+make lint           # Run vet + fmt check
+make install        # Build and install to GOPATH/bin
+```
+
+Requires Go 1.24+. Integration tests use a fake `limactl` shell script — no Lima installation needed for CI.
+
+## Files
+
+| Path | Purpose |
+|------|---------|
+| `~/.airlock/sandboxes.json` | Sandbox state registry |
+| `~/.airlock/mounts.json` | Mount registry |
+| `~/.lima/airlock-<name>/` | Lima VM instance directory |
+| `./airlock.toml` | Per-project config (optional) |
+
+## License
+
+[MIT](LICENSE)

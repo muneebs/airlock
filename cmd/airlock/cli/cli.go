@@ -1,5 +1,3 @@
-// Package cli defines the airlock command-line interface using Cobra.
-// It wires dependencies through interfaces, never concrete types.
 package cli
 
 import (
@@ -10,8 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
+	"sync/atomic"
 
+	"github.com/muneebs/airlock/cmd/airlock/cli/tui"
 	"github.com/muneebs/airlock/internal/api"
 	"github.com/muneebs/airlock/internal/config"
 	"github.com/muneebs/airlock/internal/detect"
@@ -23,11 +22,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const version = "0.1.0"
+var version = "0.1.0"
 
-// Dependencies holds all injectable dependencies for CLI commands.
-// Every field is an interface — concrete types are assembled in
-// assembleDependencies and never referenced in command handlers.
 type Dependencies struct {
 	Manager     api.SandboxManager
 	Provider    api.Provider
@@ -40,19 +36,21 @@ type Dependencies struct {
 	IsTTY       bool
 }
 
-// Execute runs the root command. It assembles all dependencies and injects them
-// into CLI subcommands. The CLI depends only on interfaces (Principle 5:
-// Dependency Inversion).
 func Execute() error {
+	return ExecuteContext(context.Background())
+}
+
+// ExecuteContext runs the root command with the given context. The context
+// is propagated to all subcommands so SIGINT/SIGTERM can cancel in-flight
+// work and trigger rollback paths.
+func ExecuteContext(ctx context.Context) error {
 	deps, err := assembleDependencies()
 	if err != nil {
 		return fmt.Errorf("initialize: %w", err)
 	}
-	return newRootCmd(os.Stdout, os.Stderr, deps).Execute()
+	return newRootCmd(os.Stdout, os.Stderr, deps).ExecuteContext(ctx)
 }
 
-// assembleDependencies constructs all production dependencies following
-// Dependency Inversion: high-level depends on interfaces, low-level implements them.
 func assembleDependencies() (*Dependencies, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -106,8 +104,6 @@ func assembleDependencies() (*Dependencies, error) {
 	}, nil
 }
 
-// isTerminal checks whether the given file is a terminal (TTY).
-// Used to decide whether to prompt for credential copying.
 func isTerminal(f *os.File) bool {
 	fi, err := f.Stat()
 	if err != nil {
@@ -116,14 +112,11 @@ func isTerminal(f *os.File) bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-// newRootCmd creates the root command with all subcommands.
 func newRootCmd(stdout, stderr io.Writer, deps *Dependencies) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "airlock",
-		Short: "Run any software in an isolated airlock environment",
-		Long: `airlock creates lightweight Lima VMs on macOS to run software in isolation.
-It supports npm/pnpm/bun projects, Go binaries, Rust crates, Python scripts,
-Docker containers, and more — all with VM-level security and zero host access.`,
+		Use:           "airlock",
+		Short:         "Run any software in an isolated airlock environment",
+		Long:          "airlock creates lightweight Lima VMs on macOS to run software in isolation.\nIt supports npm/pnpm/bun projects, Go binaries, Rust crates, Python scripts,\nDocker containers, and more — all with VM-level security and zero host access.",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -157,7 +150,7 @@ func newSetupCmd(deps *Dependencies) *cobra.Command {
 	var nodeVersion int
 
 	cmd := &cobra.Command{
-		Use:   "setup [flags] <name>",
+		Use:   "setup [flags] [name]",
 		Short: "Create and provision the airlock VM",
 		Long: `Create a fresh Lima VM, install system packages and development tools,
 then take a clean snapshot for future resets. This is the first command to run
@@ -183,32 +176,71 @@ before creating any sandboxes.`,
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			cpu := cfg.VM.CPU
 			spec := api.SandboxSpec{
 				Name:    name,
 				Profile: cfg.Security.Profile,
-				CPU:     &cpu,
+				CPU:     &cfg.VM.CPU,
 				Memory:  cfg.VM.Memory,
 				Disk:    cfg.VM.Disk,
 				Ports:   cfg.Dev.Ports,
 			}
 
-			info, err := deps.Manager.Create(ctx, spec)
-			if err != nil {
-				return fmt.Errorf("create VM: %w", err)
+			// createStage is updated by Manager.CreateWithProgress as it
+			// walks through its internal phases (validate → resolve →
+			// provider.Create → provider.Start → apply network policy →
+			// save state). The spinner renders this in its suffix so the
+			// user can see exactly which sub-step is currently running and
+			// distinguish a legitimately slow step (boot) from a hung one.
+			var createStage atomic.Value
+			createStage.Store("starting")
+
+			phases := []tui.Phase{
+				{
+					Label:     "Creating VM " + name + " (fresh Ubuntu boot takes 5–7 min)",
+					DoneLabel: "VM " + name + " created and booted",
+					Action: func() error {
+						_, err := deps.Manager.CreateWithOptions(ctx, spec, api.CreateOptions{
+							Progress: func(stage string) {
+								createStage.Store(stage)
+							},
+							SkipNetworkPolicy: true,
+						})
+						return err
+					},
+					Status: func() string {
+						s, _ := createStage.Load().(string)
+						return s
+					},
+				},
+			}
+			for _, step := range deps.Provisioner.ProvisionSteps(name, nodeVersion) {
+				step := step
+				phases = append(phases, tui.Phase{
+					Label:     step.Label,
+					DoneLabel: step.Label,
+					Action:    func() error { return step.Run(ctx) },
+				})
+			}
+			phases = append(phases, tui.Phase{
+				Label:     "Applying network policy",
+				DoneLabel: "Network policy applied",
+				Action: func() error {
+					return deps.Manager.ApplyNetworkProfile(ctx, name)
+				},
+			})
+			phases = append(phases, tui.Phase{
+				Label:     "Saving clean snapshot",
+				DoneLabel: "Snapshot saved",
+				Action: func() error {
+					return deps.Provisioner.SnapshotClean(ctx, name)
+				},
+			})
+
+			if err := tui.RunPhases(phases); err != nil {
+				return err
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "VM %q created (state=%s). Provisioning...\n", info.Name, info.State)
-
-			if err := deps.Provisioner.ProvisionVM(ctx, name, nodeVersion); err != nil {
-				return fmt.Errorf("provision VM: %w", err)
-			}
-
-			if err := deps.Provisioner.SnapshotClean(ctx, name); err != nil {
-				return fmt.Errorf("snapshot: %w", err)
-			}
-
-			fmt.Fprintf(cmd.OutOrStdout(), "VM %q provisioned and snapshot saved.\n", name)
+			fmt.Fprintf(cmd.OutOrStdout(), "\n%s\n", tui.SuccessLine("VM %q is ready to use.", name))
 			return nil
 		},
 	}
@@ -225,6 +257,7 @@ func newSandboxCmd(deps *Dependencies) *cobra.Command {
 	var ephemeral bool
 	var ports string
 	var name string
+	var jsonOutput bool
 
 	cmd := &cobra.Command{
 		Use:   "sandbox [flags] <path-or-url>",
@@ -281,11 +314,28 @@ Security profiles:
 				Ports:     ports,
 			}
 
-			info, err := deps.Manager.Create(ctx, spec)
-			if err != nil {
-				return fmt.Errorf("create sandbox: %w", err)
+			var info api.SandboxInfo
+			var createErr error
+			if jsonOutput {
+				info, createErr = deps.Manager.Create(ctx, spec)
+			} else {
+				createErr = tui.RunSpinner("Creating sandbox "+name, "Sandbox "+name+" created", func() error {
+					var err error
+					info, err = deps.Manager.Create(ctx, spec)
+					return err
+				})
+			}
+			if createErr != nil {
+				return createErr
 			}
 
+			if jsonOutput {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(info)
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout())
 			printSandboxInfo(cmd.OutOrStdout(), info)
 			return nil
 		},
@@ -297,6 +347,7 @@ Security profiles:
 	cmd.Flags().BoolVar(&ephemeral, "ephemeral", false, "Mark sandbox as ephemeral (metadata only; use 'destroy' to clean up)")
 	cmd.Flags().StringVar(&ports, "ports", "", "Port range to forward (e.g. 3000:9999), default from config")
 	cmd.Flags().StringVarP(&name, "name", "n", "", "Sandbox name (default: derived from source path)")
+	cmd.Flags().BoolVarP(&jsonOutput, "json", "j", false, "Output as JSON")
 
 	return cmd
 }
@@ -328,7 +379,7 @@ func newRunCmd(deps *Dependencies) *cobra.Command {
 
 func newShellCmd(deps *Dependencies) *cobra.Command {
 	return &cobra.Command{
-		Use:   "shell <name>",
+		Use:   "shell [name]",
 		Short: "Shell into the airlock VM",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -373,7 +424,7 @@ func newListCmd(deps *Dependencies) *cobra.Command {
 			}
 
 			if len(sandboxes) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No sandboxes found.")
+				fmt.Fprintln(cmd.OutOrStdout(), tui.EmptyState("No sandboxes found. Run 'airlock setup' to create one."))
 				return nil
 			}
 
@@ -383,13 +434,22 @@ func newListCmd(deps *Dependencies) *cobra.Command {
 				return enc.Encode(sandboxes)
 			}
 
-			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tSTATE\tPROFILE\tRUNTIME\tCREATED")
+			table := tui.NewTable(
+				tui.TableColumn{Header: "NAME", Width: 20},
+				tui.TableColumn{Header: "STATE", Width: 10},
+				tui.TableColumn{Header: "PROFILE", Width: 10},
+				tui.TableColumn{Header: "RUNTIME", Width: 10},
+				tui.TableColumn{Header: "CREATED", Width: 16},
+			)
+
 			for _, sb := range sandboxes {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-					sb.Name, sb.State, sb.Profile, sb.Runtime, sb.CreatedAt.Format("2006-01-02 15:04"))
+				stateStr := tui.StateColor(string(sb.State)).Render(string(sb.State))
+				profStr := tui.ProfileColor(sb.Profile).Render(sb.Profile)
+				table.AddRow(sb.Name, stateStr, profStr, sb.Runtime, sb.CreatedAt.Format("2006-01-02 15:04"))
 			}
-			return w.Flush()
+
+			fmt.Fprint(cmd.OutOrStdout(), table.Render())
+			return nil
 		},
 	}
 
@@ -420,7 +480,7 @@ func newRemoveCmd(deps *Dependencies) *cobra.Command {
 				return fmt.Errorf("unmount %q: %w", mountName, err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Mount %q removed.\n", mountName)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", tui.SuccessLine("Mount %q removed.", mountName))
 			return nil
 		},
 	}
@@ -432,7 +492,9 @@ func newRemoveCmd(deps *Dependencies) *cobra.Command {
 }
 
 func newStatusCmd(deps *Dependencies) *cobra.Command {
-	return &cobra.Command{
+	var jsonOutput bool
+
+	cmd := &cobra.Command{
 		Use:   "status [name]",
 		Short: "Show sandbox status, mounts, network state",
 		Args:  cobra.MaximumNArgs(1),
@@ -452,24 +514,44 @@ func newStatusCmd(deps *Dependencies) *cobra.Command {
 				return fmt.Errorf("status %q: %w", name, err)
 			}
 
+			if jsonOutput {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				return enc.Encode(info)
+			}
+
 			printSandboxInfo(cmd.OutOrStdout(), info)
 
 			mounts, _ := deps.Mounts.List(ctx, name)
 			if len(mounts) > 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "\nMounts:\n")
+				fmt.Fprintf(cmd.OutOrStdout(), "\n%s\n", tui.SectionHeader("Mounts"))
 				for _, m := range mounts {
-					fmt.Fprintf(cmd.OutOrStdout(), "  %s -> %s (writable=%v)\n", m.HostPath, m.VMPath, m.Writable)
+					writable := "read-only"
+					if m.Writable {
+						writable = "read-write"
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s %s %s %s (%s)\n",
+						tui.Bullet.String(), m.HostPath, tui.Arrow.String(), m.VMPath, writable)
 				}
 			}
 
 			locked, err := deps.Network.IsLocked(ctx, name)
 			if err == nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "\nNetwork: %s\n", networkState(locked))
+				fmt.Fprintf(cmd.OutOrStdout(), "\n%s\n", tui.SectionHeader("Network"))
+				if locked {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n", tui.Bullet.String(), tui.LockColor(true).Render("locked (outbound blocked)"))
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n", tui.Bullet.String(), tui.LockColor(false).Render("unlocked (outbound allowed)"))
+				}
 			}
 
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVarP(&jsonOutput, "json", "j", false, "Output as JSON")
+
+	return cmd
 }
 
 func newStopCmd(deps *Dependencies) *cobra.Command {
@@ -488,11 +570,13 @@ func newStopCmd(deps *Dependencies) *cobra.Command {
 				name = args[0]
 			}
 
-			if err := deps.Manager.Stop(ctx, name); err != nil {
+			if err := tui.RunSpinner("Stopping sandbox "+name, "Sandbox "+name+" stopped", func() error {
+				return deps.Manager.Stop(ctx, name)
+			}); err != nil {
 				return fmt.Errorf("stop %q: %w", name, err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Sandbox %q stopped.\n", name)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", tui.SuccessLine("Sandbox %q stopped.", name))
 			return nil
 		},
 	}
@@ -517,11 +601,13 @@ All changes since the last snapshot are lost.`,
 				name = args[0]
 			}
 
-			if err := deps.Manager.Reset(ctx, name); err != nil {
+			if err := tui.RunSpinner("Resetting sandbox "+name, "Sandbox "+name+" reset", func() error {
+				return deps.Manager.Reset(ctx, name)
+			}); err != nil {
 				return fmt.Errorf("reset %q: %w", name, err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Sandbox %q reset to clean state.\n", name)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", tui.SuccessLine("Sandbox %q reset to clean state.", name))
 			return nil
 		},
 	}
@@ -543,11 +629,13 @@ func newDestroyCmd(deps *Dependencies) *cobra.Command {
 				name = args[0]
 			}
 
-			if err := deps.Manager.Destroy(ctx, name); err != nil {
+			if err := tui.RunSpinner("Destroying sandbox "+name, "Sandbox "+name+" destroyed", func() error {
+				return deps.Manager.Destroy(ctx, name)
+			}); err != nil {
 				return fmt.Errorf("destroy %q: %w", name, err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Sandbox %q destroyed.\n", name)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", tui.SuccessLine("Sandbox %q destroyed.", name))
 			return nil
 		},
 	}
@@ -573,7 +661,7 @@ func newLockCmd(deps *Dependencies) *cobra.Command {
 				return fmt.Errorf("lock network for %q: %w", name, err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Network locked for sandbox %q. All outbound traffic is blocked except DNS.\n", name)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", tui.SuccessLine("Network locked for sandbox %q. All outbound traffic blocked except DNS.", name))
 			return nil
 		},
 	}
@@ -599,7 +687,7 @@ func newUnlockCmd(deps *Dependencies) *cobra.Command {
 				return fmt.Errorf("unlock network for %q: %w", name, err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Network unlocked for sandbox %q. Outbound traffic is allowed.\n", name)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", tui.SuccessLine("Network unlocked for sandbox %q. Outbound traffic is allowed.", name))
 			return nil
 		},
 	}
@@ -656,16 +744,20 @@ func newProfileCmd(deps *Dependencies) *cobra.Command {
 		Short: "List available security profiles",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			names := deps.Profiles.List()
-			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "PROFILE\tDESCRIPTION")
+			table := tui.NewTable(
+				tui.TableColumn{Header: "PROFILE", Width: 12},
+				tui.TableColumn{Header: "DESCRIPTION", Width: 80},
+			)
 			for _, name := range names {
 				p, err := deps.Profiles.Get(name)
 				if err != nil {
 					continue
 				}
-				fmt.Fprintf(w, "%s\t%s\n", p.Name, p.Description)
+				profileStyle := tui.ProfileColor(p.Name)
+				table.AddRow(profileStyle.Render(p.Name), p.Description)
 			}
-			return w.Flush()
+			fmt.Fprint(cmd.OutOrStdout(), table.Render())
+			return nil
 		},
 	}
 }
@@ -675,13 +767,12 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print airlock version",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), "airlock "+version)
+			fmt.Fprintf(cmd.OutOrStdout(), "airlock %s\n", tui.Bold.Render(version))
 			return nil
 		},
 	}
 }
 
-// deriveSandboxName creates a sandbox name from a source path or URL.
 func deriveSandboxName(source string) string {
 	if strings.HasPrefix(source, "gh:") {
 		parts := strings.SplitN(strings.TrimPrefix(source, "gh:"), "/", 2)
@@ -731,16 +822,21 @@ func isAlphaNum(r rune) bool {
 }
 
 func printSandboxInfo(w io.Writer, info api.SandboxInfo) {
-	fmt.Fprintf(w, "Name:      %s\n", info.Name)
-	fmt.Fprintf(w, "State:     %s\n", info.State)
-	fmt.Fprintf(w, "Profile:   %s\n", info.Profile)
-	fmt.Fprintf(w, "Runtime:   %s\n", info.Runtime)
-	fmt.Fprintf(w, "Source:    %s\n", info.Source)
-	fmt.Fprintf(w, "CPU:       %d\n", info.CPU)
-	fmt.Fprintf(w, "Memory:    %s\n", info.Memory)
-	fmt.Fprintf(w, "Disk:      %s\n", info.Disk)
-	fmt.Fprintf(w, "Ephemeral: %v\n", info.Ephemeral)
-	fmt.Fprintf(w, "Created:   %s\n", info.CreatedAt.Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(w, "%s\n", tui.SectionHeader("Sandbox"))
+	fmt.Fprintf(w, "  %s\n", tui.StyledKeyValue("Name", info.Name, tui.KeyStyle))
+	fmt.Fprintf(w, "  %s\n", tui.StyledKeyValue("State", tui.StateColor(string(info.State)).Render(string(info.State)), tui.KeyStyle))
+	fmt.Fprintf(w, "  %s\n", tui.StyledKeyValue("Profile", tui.ProfileColor(info.Profile).Render(info.Profile), tui.KeyStyle))
+	fmt.Fprintf(w, "  %s\n", tui.StyledKeyValue("Runtime", info.Runtime, tui.KeyStyle))
+	if info.Source != "" {
+		fmt.Fprintf(w, "  %s\n", tui.StyledKeyValue("Source", info.Source, tui.KeyStyle))
+	}
+	fmt.Fprintf(w, "  %s\n", tui.StyledKeyValue("CPU", fmt.Sprintf("%d", info.CPU), tui.KeyStyle))
+	fmt.Fprintf(w, "  %s\n", tui.StyledKeyValue("Memory", info.Memory, tui.KeyStyle))
+	fmt.Fprintf(w, "  %s\n", tui.StyledKeyValue("Disk", info.Disk, tui.KeyStyle))
+	if info.Ephemeral {
+		fmt.Fprintf(w, "  %s\n", tui.StyledKeyValue("Ephemeral", tui.WarningF.Render("true"), tui.KeyStyle))
+	}
+	fmt.Fprintf(w, "  %s\n", tui.StyledKeyValue("Created", info.CreatedAt.Format("2006-01-02 15:04:05"), tui.KeyStyle))
 }
 
 func networkState(locked bool) string {

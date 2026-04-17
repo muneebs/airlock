@@ -1,7 +1,6 @@
 package lima
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,41 +44,61 @@ func NewLimaProviderWithPaths(limactlPath, limaDir string) *LimaProvider {
 }
 
 // Create generates a Lima YAML config from the VMSpec and runs limactl create.
+// If a VM with the same name already exists, it returns an error.
+// On failure, any partially created directory is cleaned up.
 func (p *LimaProvider) Create(ctx context.Context, spec api.VMSpec) error {
 	if err := validateName(spec.Name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
+
+	exists, err := p.Exists(ctx, spec.Name)
+	if err != nil {
+		return fmt.Errorf("check VM existence: %w", err)
+	}
+	if exists {
+		return fmt.Errorf("VM %q already exists", spec.Name)
+	}
+
 	configYAML, err := GenerateConfig(spec)
 	if err != nil {
 		return fmt.Errorf("generate lima config: %w", err)
 	}
 
-	dir := filepath.Join(p.limaDir, spec.Name)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create vm dir: %w", err)
-	}
-
-	configPath := filepath.Join(dir, "lima.yaml")
-	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
-		return fmt.Errorf("write lima.yaml: %w", err)
-	}
-
-	_, err = p.runCmd(ctx, "create", "--name="+spec.Name, configPath)
+	tmpFile, err := os.CreateTemp("", "airlock-lima-*.yaml")
 	if err != nil {
-		return fmt.Errorf("limactl create %s: %w", spec.Name, err)
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(configYAML); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close config: %w", err)
+	}
+
+	_, err = p.runCmdDetached(ctx, "create", "--tty=false", "--name="+spec.Name, tmpFile.Name())
+	if err != nil {
+		return fmt.Errorf("create VM %s: %w", spec.Name, err)
 	}
 
 	return nil
 }
 
 // Start starts an existing Lima VM.
+// First boot of a fresh VM can take several minutes (cloud-init, package
+// installation, SSH setup). runCmdDetached is used because limactl start
+// daemonizes qemu/vz; child processes inherit any pipe we assign to stderr,
+// causing cmd.Wait to block until every descendant exits. Using real files
+// avoids pipe inheritance so Wait returns as soon as limactl itself exits.
 func (p *LimaProvider) Start(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
-	_, err := p.runCmd(ctx, "start", name)
+	_, err := p.runCmdDetached(ctx, "start", name)
 	if err != nil {
-		return fmt.Errorf("limactl start %s: %w", name, err)
+		return fmt.Errorf("start VM %s: %w", name, err)
 	}
 	return nil
 }
@@ -91,7 +110,7 @@ func (p *LimaProvider) Stop(ctx context.Context, name string) error {
 	}
 	_, err := p.runCmd(ctx, "stop", name)
 	if err != nil {
-		return fmt.Errorf("limactl stop %s: %w", name, err)
+		return fmt.Errorf("stop VM %s: %w", name, err)
 	}
 	return nil
 }
@@ -103,7 +122,7 @@ func (p *LimaProvider) Delete(ctx context.Context, name string) error {
 	}
 	_, err := p.runCmd(ctx, "delete", name)
 	if err != nil {
-		return fmt.Errorf("limactl delete %s: %w", name, err)
+		return fmt.Errorf("delete VM %s: %w", name, err)
 	}
 	return nil
 }
@@ -140,6 +159,23 @@ func (p *LimaProvider) IsRunning(ctx context.Context, name string) (bool, error)
 		}
 	}
 	return false, nil
+}
+
+// Status returns Lima's lifecycle string for the VM, or "" if not found.
+func (p *LimaProvider) Status(ctx context.Context, name string) (string, error) {
+	if err := validateName(name); err != nil {
+		return "", fmt.Errorf("invalid vm name: %w", err)
+	}
+	vms, err := p.listVMs(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, vm := range vms {
+		if vm.Name == name {
+			return vm.Status, nil
+		}
+	}
+	return "", nil
 }
 
 // Exec runs a command inside the Lima VM as root.
@@ -190,7 +226,7 @@ type limaVMInfo struct {
 func (p *LimaProvider) listVMs(ctx context.Context) ([]limaVMInfo, error) {
 	output, err := p.runCmd(ctx, "list", "--json")
 	if err != nil {
-		return nil, fmt.Errorf("limactl list: %w", err)
+		return nil, fmt.Errorf("list VMs: %w", err)
 	}
 
 	var vms []limaVMInfo
@@ -208,18 +244,91 @@ func (p *LimaProvider) listVMs(ctx context.Context) ([]limaVMInfo, error) {
 	return vms, nil
 }
 
-// runCmd executes a limactl command with the given arguments.
+// runCmd executes a limactl command using real files (not bytes.Buffer) for
+// stdout and stderr. This matters because limactl invokes ssh with
+// ControlMaster/ControlPersist, which leaves a background ssh process running
+// after the shell command exits. Grandchildren inherit whatever fds we assign
+// to the child. If those fds are pipes (as they are when cmd.Stdout/Stderr
+// are io.Writers that are not *os.File), os/exec spawns a copier goroutine
+// that blocks cmd.Wait until EOF — and EOF never arrives while the ssh master
+// still holds the write end. Using real files (*os.File) skips the pipe
+// entirely: Wait returns as soon as limactl itself exits, regardless of any
+// persistent ssh masters or qemu/vz children still holding the fd.
 func (p *LimaProvider) runCmd(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, p.limactlPath, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdoutBytes, _, err := p.runCmdFiles(ctx, args...)
+	return stdoutBytes, err
+}
 
-	if err := cmd.Run(); err != nil {
-		return stdout.String(), fmt.Errorf("%s %s: %w\n%s",
-			p.limactlPath, strings.Join(args, " "), err, stderr.String())
+// runCmdDetached is a convenience wrapper for commands whose stdout is known
+// to be progress noise rather than data (create, start). Stdout is discarded
+// so we don't even allocate a tempfile for it.
+func (p *LimaProvider) runCmdDetached(ctx context.Context, args ...string) (string, error) {
+	_, _, err := p.runCmdFiles(ctx, args...)
+	return "", err
+}
+
+// runCmdFiles is the shared implementation: tempfile for stdout, tempfile
+// for stderr, both closed and read after the child exits.
+func (p *LimaProvider) runCmdFiles(ctx context.Context, args ...string) (string, string, error) {
+	stdoutFile, err := os.CreateTemp("", "airlock-lima-stdout-*")
+	if err != nil {
+		return "", "", fmt.Errorf("create stdout temp: %w", err)
 	}
-	return stdout.String(), nil
+	defer os.Remove(stdoutFile.Name())
+	defer stdoutFile.Close()
+
+	stderrFile, err := os.CreateTemp("", "airlock-lima-stderr-*")
+	if err != nil {
+		return "", "", fmt.Errorf("create stderr temp: %w", err)
+	}
+	defer os.Remove(stderrFile.Name())
+	defer stderrFile.Close()
+
+	cmd := exec.CommandContext(ctx, p.limactlPath, args...)
+	cmd.Stdout = stdoutFile
+	cmd.Stderr = stderrFile
+
+	runErr := cmd.Run()
+
+	stdoutBytes, _ := os.ReadFile(stdoutFile.Name())
+	stderrBytes, _ := os.ReadFile(stderrFile.Name())
+
+	if runErr != nil {
+		return string(stdoutBytes), string(stderrBytes), fmt.Errorf("%s: %w", cleanLimactlError(args[0], string(stderrBytes)), runErr)
+	}
+	return string(stdoutBytes), string(stderrBytes), nil
+}
+
+func cleanLimactlError(action string, stderr string) string {
+	var parts []string
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "time=") {
+			if idx := strings.Index(line, "msg="); idx != -1 {
+				msg := strings.Trim(strings.TrimPrefix(line[idx:], "msg="), `"`)
+				if msg != "" {
+					parts = append(parts, msg)
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "level=") {
+			if idx := strings.Index(line, "msg="); idx != -1 {
+				msg := strings.Trim(strings.TrimPrefix(line[idx:], "msg="), `"`)
+				if msg != "" {
+					parts = append(parts, msg)
+				}
+			}
+			continue
+		}
+		if line != "" {
+			parts = append(parts, line)
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("limactl %s", action)
+	}
+	return fmt.Sprintf("limactl %s: %s", action, strings.Join(parts, ": "))
 }
 
 // shellEscape wraps a string in single quotes, replacing internal single quotes
