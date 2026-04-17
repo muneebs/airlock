@@ -70,7 +70,7 @@ Security-sensitive code (network policy, mount handling, credential copying, pri
 
 ## Package structure
 
-```
+```text
 cmd/airlock/cli/         CLI commands and dependency injection
 internal/api/            Interface contracts
 internal/sandbox/        Orchestrator (Create, Run, Stop, Destroy, Reset, List, Status)

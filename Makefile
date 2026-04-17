@@ -32,6 +32,7 @@ fmt:
 lint: vet fmt
 
 install: build
+	@mkdir -p $(GOPATH)/bin
 	@cp $(BINARY) $(GOPATH)/bin/$(BINARY)
 	@echo "Installed to $(GOPATH)/bin/$(BINARY)"
 

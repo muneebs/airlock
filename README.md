@@ -104,7 +104,7 @@ Profiles encode security policies so you don't have to be an expert. The default
 | `dev` | Read-write | Open | Yes | Writable | Software you trust for development |
 | `trusted` | Read-write | Open | Yes | Writable | Software you author or fully trust |
 
-Network locking uses iptables inside the VM. `Lock` blocks all outbound connections except DNS. `Unlock` restores normal access. `LoadAfterSetup: true` (strict, cautious) means the network is locked immediately after the sandbox is created.
+Network locking uses iptables inside the VM. `Lock` blocks all outbound connections except DNS. `Unlock` restores normal access. `LockAfterSetup: true` (strict, cautious) means the network is locked immediately after the sandbox is created.
 
 ## Configuration
 
@@ -189,7 +189,7 @@ airlock unlock my-sandbox   # Re-enable outbound
 Network policies are enforced per-sandbox via iptables inside the VM. Locking applies:
 
 - DNS (UDP port 53) is always allowed
-- Inbound established connections are allowed in `strict` and `cautious` profiles
+- Reply packets on already-established outbound connections (ESTABLISHED,RELATED on the OUTPUT chain) are allowed in `strict` and `cautious` profiles
 - All other outbound traffic is blocked when locked
 
 ## Architecture
@@ -238,7 +238,7 @@ make lint           # Run vet + fmt check
 make install        # Build and install to GOPATH/bin
 ```
 
-Requires Go 1.23+. Integration tests use a fake `limactl` shell script — no Lima installation needed for CI.
+Requires Go 1.24+. Integration tests use a fake `limactl` shell script — no Lima installation needed for CI.
 
 ## Files
 
