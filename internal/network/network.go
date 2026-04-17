@@ -4,15 +4,24 @@
 package network
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/muneebs/airlock/internal/api"
 )
+
+// limactlCallTimeout bounds how long any single limactl shell invocation is
+// allowed to run before we give up and surface an error. Setting iptables
+// rules or running small shell commands in a healthy VM completes in under
+// a second; 60s is a generous ceiling that catches hangs (ssh ControlMaster
+// stuck, xtables lock held indefinitely, VM SSH daemon unresponsive) without
+// interfering with legitimate slow operations.
+const limactlCallTimeout = 60 * time.Second
 
 // CommandRunner executes a command inside a Lima VM and returns an error.
 // Production implementations shell out to limactl; tests provide fakes.
@@ -53,13 +62,17 @@ func NewLimaControllerWithRunners(runCmd CommandRunner, runOutput OutputRunner) 
 	}
 }
 
-// Lock blocks all outbound network traffic except DNS and loopback.
-// After this call, the sandbox can only resolve DNS and communicate on loopback.
+// Lock blocks all outbound network traffic except DNS, loopback, and
+// reply packets on already-established connections. ESTABLISHED must
+// remain allowed or Lock kills the lima ssh session that applied the
+// rule: the VM's sshd replies travel out via the OUTPUT chain, so
+// dropping ESTABLISHED drops the ssh return path and every subsequent
+// limactl shell call hangs until the client times out.
 func (lc *LimaController) Lock(ctx context.Context, sandboxName string) error {
 	policy := api.NetworkPolicy{
 		AllowDNS:         true,
 		AllowOutbound:    false,
-		AllowEstablished: false,
+		AllowEstablished: true,
 	}
 	return lc.ApplyPolicy(ctx, sandboxName, policy)
 }
@@ -172,17 +185,17 @@ func (lc *LimaController) RemovePolicy(_ context.Context, sandboxName string) er
 }
 
 // limactlRunExec executes a command inside a Lima VM via limactl shell.
+// stdout/stderr go to real tempfiles rather than bytes.Buffer so that the
+// background ssh ControlMaster process Lima spawns cannot pin cmd.Wait by
+// holding a copier-pipe fd open after the shell command exits.
 func limactlRunExec(ctx context.Context, vmName, cmd string) error {
 	limactl, err := exec.LookPath("limactl")
 	if err != nil {
 		return fmt.Errorf("limactl not found in PATH: %w", err)
 	}
-	c := exec.CommandContext(ctx, limactl, "shell", "--workdir", "/", vmName, "--", "bash", "-c", cmd)
-	var stderr bytes.Buffer
-	c.Stdout = nil
-	c.Stderr = &stderr
-	if err := c.Run(); err != nil {
-		return fmt.Errorf("limactl exec in %s: %w: %s", vmName, err, strings.TrimSpace(stderr.String()))
+	_, stderrStr, err := runLimactlFiles(ctx, limactl, "shell", "--workdir", "/", vmName, "--", "bash", "-c", cmd)
+	if err != nil {
+		return fmt.Errorf("limactl exec in %s: %w: %s", vmName, err, strings.TrimSpace(stderrStr))
 	}
 	return nil
 }
@@ -193,12 +206,47 @@ func limactlOutputExec(ctx context.Context, vmName, cmd string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("limactl not found in PATH: %w", err)
 	}
-	c := exec.CommandContext(ctx, limactl, "shell", "--workdir", "/", vmName, "--", "bash", "-c", cmd)
-	var stderr bytes.Buffer
-	c.Stderr = &stderr
-	output, err := c.Output()
+	stdoutStr, stderrStr, err := runLimactlFiles(ctx, limactl, "shell", "--workdir", "/", vmName, "--", "bash", "-c", cmd)
 	if err != nil {
-		return string(output), fmt.Errorf("limactl exec in %s: %w: %s", vmName, err, strings.TrimSpace(stderr.String()))
+		return stdoutStr, fmt.Errorf("limactl exec in %s: %w: %s", vmName, err, strings.TrimSpace(stderrStr))
 	}
-	return string(output), nil
+	return stdoutStr, nil
+}
+
+// runLimactlFiles runs limactl with stdout/stderr redirected to tempfiles
+// instead of bytes.Buffer. See the comment on LimaProvider.runCmd for why
+// this matters (ssh ControlMaster inherits fds and pins pipe copiers).
+// A timeout is enforced so a stuck ssh ControlMaster or xtables lock does
+// not freeze the whole setup flow; the returned error clearly indicates
+// the timeout so the caller can surface it instead of hanging.
+func runLimactlFiles(ctx context.Context, limactl string, args ...string) (string, string, error) {
+	stdoutFile, err := os.CreateTemp("", "airlock-net-stdout-*")
+	if err != nil {
+		return "", "", fmt.Errorf("create stdout temp: %w", err)
+	}
+	defer os.Remove(stdoutFile.Name())
+	defer stdoutFile.Close()
+
+	stderrFile, err := os.CreateTemp("", "airlock-net-stderr-*")
+	if err != nil {
+		return "", "", fmt.Errorf("create stderr temp: %w", err)
+	}
+	defer os.Remove(stderrFile.Name())
+	defer stderrFile.Close()
+
+	callCtx, cancel := context.WithTimeout(ctx, limactlCallTimeout)
+	defer cancel()
+
+	c := exec.CommandContext(callCtx, limactl, args...)
+	c.Stdout = stdoutFile
+	c.Stderr = stderrFile
+	runErr := c.Run()
+
+	stdoutBytes, _ := os.ReadFile(stdoutFile.Name())
+	stderrBytes, _ := os.ReadFile(stderrFile.Name())
+
+	if runErr != nil && callCtx.Err() == context.DeadlineExceeded {
+		return string(stdoutBytes), string(stderrBytes), fmt.Errorf("limactl call timed out after %s (likely ssh ControlMaster or xtables lock is stuck): %w", limactlCallTimeout, runErr)
+	}
+	return string(stdoutBytes), string(stderrBytes), runErr
 }

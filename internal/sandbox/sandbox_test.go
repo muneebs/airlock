@@ -78,6 +78,17 @@ func (f *fakeProvider) IsRunning(_ context.Context, name string) (bool, error) {
 	return running, nil
 }
 
+func (f *fakeProvider) Status(_ context.Context, name string) (string, error) {
+	running, ok := f.vms[name]
+	if !ok {
+		return "", nil
+	}
+	if running {
+		return "Running", nil
+	}
+	return "Stopped", nil
+}
+
 func (f *fakeProvider) Exec(_ context.Context, name string, cmd []string) (string, error) {
 	return f.execOut, f.execErr
 }

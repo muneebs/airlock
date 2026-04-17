@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/muneebs/airlock/cmd/airlock/cli/tui"
 	"github.com/muneebs/airlock/internal/api"
@@ -184,30 +185,56 @@ before creating any sandboxes.`,
 				Ports:   cfg.Dev.Ports,
 			}
 
+			// createStage is updated by Manager.CreateWithProgress as it
+			// walks through its internal phases (validate → resolve →
+			// provider.Create → provider.Start → apply network policy →
+			// save state). The spinner renders this in its suffix so the
+			// user can see exactly which sub-step is currently running and
+			// distinguish a legitimately slow step (boot) from a hung one.
+			var createStage atomic.Value
+			createStage.Store("starting")
+
 			phases := []tui.Phase{
 				{
-					Label:     "Creating VM " + name,
-					DoneLabel: "VM " + name + " created",
+					Label:     "Creating VM " + name + " (fresh Ubuntu boot takes 5–7 min)",
+					DoneLabel: "VM " + name + " created and booted",
 					Action: func() error {
-						_, err := deps.Manager.Create(ctx, spec)
+						_, err := deps.Manager.CreateWithOptions(ctx, spec, api.CreateOptions{
+							Progress: func(stage string) {
+								createStage.Store(stage)
+							},
+							SkipNetworkPolicy: true,
+						})
 						return err
 					},
-				},
-				{
-					Label:     fmt.Sprintf("Provisioning (Node.js %d)", nodeVersion),
-					DoneLabel: "Provisioned",
-					Action: func() error {
-						return deps.Provisioner.ProvisionVM(ctx, name, nodeVersion)
-					},
-				},
-				{
-					Label:     "Saving clean snapshot",
-					DoneLabel: "Snapshot saved",
-					Action: func() error {
-						return deps.Provisioner.SnapshotClean(ctx, name)
+					Status: func() string {
+						s, _ := createStage.Load().(string)
+						return s
 					},
 				},
 			}
+			for _, step := range deps.Provisioner.ProvisionSteps(name, nodeVersion) {
+				step := step
+				phases = append(phases, tui.Phase{
+					Label:     step.Label,
+					DoneLabel: step.Label,
+					Action:    func() error { return step.Run(ctx) },
+				})
+			}
+			phases = append(phases, tui.Phase{
+				Label:     "Applying network policy",
+				DoneLabel: "Network policy applied",
+				Action: func() error {
+					return deps.Manager.ApplyNetworkProfile(ctx, name)
+				},
+			})
+			phases = append(phases, tui.Phase{
+				Label:     "Saving clean snapshot",
+				DoneLabel: "Snapshot saved",
+				Action: func() error {
+					return deps.Provisioner.SnapshotClean(ctx, name)
+				},
+			})
 
 			if err := tui.RunPhases(phases); err != nil {
 				return err

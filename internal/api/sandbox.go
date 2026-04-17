@@ -32,10 +32,39 @@ type SandboxInfo struct {
 	Disk      string       `json:"disk" yaml:"disk"`
 }
 
+// ProgressFn receives human-readable stage names as a long-running operation
+// moves through its internal phases (e.g. "generating config",
+// "booting vm", "applying network policy"). Callers use it to surface live
+// feedback in the UI without tapping into subprocess output streams.
+type ProgressFn func(stage string)
+
+// CreateOptions tunes the Create workflow.
+type CreateOptions struct {
+	// Progress receives stage updates as Create advances. May be nil.
+	Progress ProgressFn
+	// SkipNetworkPolicy defers iptables rule application. Callers must
+	// invoke ApplyNetworkProfile themselves once the guest has iptables
+	// installed (e.g. after provisioning). Setup uses this to avoid running
+	// iptables-restore on a freshly booted Ubuntu image that may not yet
+	// have the iptables backend initialized.
+	SkipNetworkPolicy bool
+}
+
 // SandboxManager creates, inspects, and destroys isolated sandbox environments.
 // Implementation must ensure each sandbox gets its own VM with no shared state.
 type SandboxManager interface {
 	Create(ctx context.Context, spec SandboxSpec) (SandboxInfo, error)
+	// CreateWithProgress is Create with a callback that receives stage
+	// names as the create workflow advances. Pass nil for progress to get
+	// Create's behavior.
+	CreateWithProgress(ctx context.Context, spec SandboxSpec, progress ProgressFn) (SandboxInfo, error)
+	// CreateWithOptions is Create with a full options struct. Prefer this
+	// when callers need to opt out of network policy application.
+	CreateWithOptions(ctx context.Context, spec SandboxSpec, opts CreateOptions) (SandboxInfo, error)
+	// ApplyNetworkProfile applies the stored profile's network policy to
+	// an existing sandbox. Used after provisioning when Create was invoked
+	// with SkipNetworkPolicy.
+	ApplyNetworkProfile(ctx context.Context, name string) error
 	Start(ctx context.Context, name string) error
 	Run(ctx context.Context, name string, command []string) (string, error)
 	Stop(ctx context.Context, name string) error

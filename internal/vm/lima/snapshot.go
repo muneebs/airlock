@@ -3,6 +3,7 @@ package lima
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,6 +11,31 @@ import (
 
 	"github.com/muneebs/airlock/internal/api"
 )
+
+// copyFileStreaming copies a regular file without loading it into memory.
+// Lima disk images are multi-GB (often sparse); os.ReadFile would allocate
+// a buffer of the apparent size and either OOM or thrash swap, appearing to
+// the user as a hang during the snapshot phase.
+func copyFileStreaming(src, dst string, perm fs.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(dst, perm.Perm())
+}
 
 // safeFilePerm masks file permissions to strips SUID, SGID, and world-write bits,
 // preventing privilege escalation via snapshot restore.
@@ -72,14 +98,7 @@ func (p *LimaProvider) SnapshotClean(ctx context.Context, name string) error {
 			return fmt.Errorf("stat %s: %w", path, err)
 		}
 
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(targetPath, data, safeFilePerm(info.Mode())); err != nil {
-			return err
-		}
-		return os.Chmod(targetPath, safeFilePerm(info.Mode()).Perm())
+		return copyFileStreaming(path, targetPath, safeFilePerm(info.Mode()))
 	})
 }
 
@@ -121,37 +140,71 @@ func (p *LimaProvider) HasCleanSnapshot(ctx context.Context, name string) (bool,
 // ProvisionVM runs the standard provision commands for a fresh VM.
 // This installs Node.js, pnpm, bun, Docker, and creates the airlock user.
 func (p *LimaProvider) ProvisionVM(ctx context.Context, name string, nodeVersion int) error {
-	if err := validateName(name); err != nil {
-		return fmt.Errorf("invalid vm name: %w", err)
+	for _, step := range p.ProvisionSteps(name, nodeVersion) {
+		if err := step.Run(ctx); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+// ProvisionSteps returns the provisioning sequence as discrete, named steps
+// so callers can render per-step progress. Failing required steps propagate
+// their error; non-fatal steps (Bun, Docker) swallow errors to match the
+// previous ProvisionVM behavior.
+func (p *LimaProvider) ProvisionSteps(name string, nodeVersion int) []api.ProvisionStep {
 	if nodeVersion <= 0 {
 		nodeVersion = 22
 	}
 
-	provisionCmds := []struct {
-		desc string
-		cmd  []string
+	required := []struct {
+		label string
+		desc  string
+		cmd   []string
 	}{
-		{"system packages", []string{"sudo", "bash", "-c", "export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y curl jq iptables unzip git"}},
-		{"node.js", []string{"sudo", "bash", "-c", fmt.Sprintf("curl -fsSL https://deb.nodesource.com/setup_%d.x | bash - && apt-get install -y nodejs", nodeVersion)}},
-		{"pnpm", []string{"sudo", "npm", "install", "-g", "pnpm"}},
-		{"create airlock user", []string{"sudo", "bash", "-c", "id airlock &>/dev/null || useradd -m -s /bin/bash airlock"}},
-		{"setup airlock dirs", []string{"sudo", "bash", "-c", "mkdir -p /home/airlock/.npm-global /home/airlock/projects && chown -R airlock:airlock /home/airlock"}},
-		{"npm prefix", []string{"sudo", "-u", "airlock", "bash", "--login", "-c", "npm config set prefix /home/airlock/.npm-global"}},
+		{"Installing system packages", "system packages", []string{"sudo", "bash", "-c", "export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y curl jq iptables unzip git"}},
+		{fmt.Sprintf("Installing Node.js %d", nodeVersion), "node.js", []string{"sudo", "bash", "-c", fmt.Sprintf("curl -fsSL https://deb.nodesource.com/setup_%d.x | bash - && apt-get install -y nodejs", nodeVersion)}},
+		{"Installing pnpm", "pnpm", []string{"sudo", "npm", "install", "-g", "pnpm"}},
+		{"Creating airlock user", "create airlock user", []string{"sudo", "bash", "-c", "id airlock &>/dev/null || useradd -m -s /bin/bash airlock"}},
+		{"Preparing airlock home", "setup airlock dirs", []string{"sudo", "bash", "-c", "mkdir -p /home/airlock/.npm-global /home/airlock/projects && chown -R airlock:airlock /home/airlock"}},
+		{"Configuring npm prefix", "npm prefix", []string{"sudo", "-u", "airlock", "bash", "--login", "-c", "npm config set prefix /home/airlock/.npm-global"}},
 	}
 
-	for _, pc := range provisionCmds {
-		_, err := p.Exec(ctx, name, pc.cmd)
-		if err != nil {
-			return fmt.Errorf("provision %s: %w", pc.desc, err)
-		}
+	steps := make([]api.ProvisionStep, 0, len(required)+2)
+	for _, r := range required {
+		r := r
+		steps = append(steps, api.ProvisionStep{
+			Label: r.label,
+			Run: func(ctx context.Context) error {
+				if err := validateName(name); err != nil {
+					return fmt.Errorf("invalid vm name: %w", err)
+				}
+				if _, err := p.Exec(ctx, name, r.cmd); err != nil {
+					return fmt.Errorf("provision %s: %w", r.desc, err)
+				}
+				return nil
+			},
+		})
 	}
 
-	// Non-fatal provisions
-	_ = p.installBun(ctx, name)
-	_ = p.installDocker(ctx, name)
+	steps = append(steps,
+		api.ProvisionStep{
+			Label: "Installing Bun",
+			Run: func(ctx context.Context) error {
+				_ = p.installBun(ctx, name)
+				return nil
+			},
+		},
+		api.ProvisionStep{
+			Label: "Installing Docker",
+			Run: func(ctx context.Context) error {
+				_ = p.installDocker(ctx, name)
+				return nil
+			},
+		},
+	)
 
-	return nil
+	return steps
 }
 
 func (p *LimaProvider) installBun(ctx context.Context, name string) error {
@@ -206,14 +259,7 @@ func copyDir(src, dst string) error {
 			return fmt.Errorf("stat %s: %w", path, err)
 		}
 
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(targetPath, data, safeFilePerm(info.Mode())); err != nil {
-			return err
-		}
-		return os.Chmod(targetPath, safeFilePerm(info.Mode()).Perm())
+		return copyFileStreaming(path, targetPath, safeFilePerm(info.Mode()))
 	})
 }
 

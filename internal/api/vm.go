@@ -12,6 +12,11 @@ type Provider interface {
 	Delete(ctx context.Context, name string) error
 	Exists(ctx context.Context, name string) (bool, error)
 	IsRunning(ctx context.Context, name string) (bool, error)
+	// Status returns the provider-native lifecycle string for the VM
+	// (e.g. "Running", "Stopped", "Broken"). Returns an empty string if
+	// the VM does not exist. Used to surface live progress during slow
+	// operations like first-boot; not for authoritative state decisions.
+	Status(ctx context.Context, name string) (string, error)
 	Exec(ctx context.Context, name string, cmd []string) (string, error)
 	ExecAsUser(ctx context.Context, name, user string, cmd []string) (string, error)
 	CopyToVM(ctx context.Context, name, src, dst string) error
@@ -22,8 +27,17 @@ type Provider interface {
 // Principle — not every Provider can provision VMs or take snapshots.
 type Provisioner interface {
 	ProvisionVM(ctx context.Context, name string, nodeVersion int) error
+	ProvisionSteps(name string, nodeVersion int) []ProvisionStep
 	SnapshotClean(ctx context.Context, name string) error
 	HasCleanSnapshot(ctx context.Context, name string) (bool, error)
+}
+
+// ProvisionStep is a named unit of work in the provisioning sequence.
+// Callers (e.g. the setup command) iterate these to render branded,
+// per-step progress instead of a single opaque "Provisioning" phase.
+type ProvisionStep struct {
+	Label string
+	Run   func(ctx context.Context) error
 }
 
 // ShellProvider provides interactive shell access to a VM. This is a separate
