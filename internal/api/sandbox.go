@@ -93,4 +93,7 @@ type SandboxSpec struct {
 
 	// Command runs immediately after sandbox creation.
 	Command string `json:"command,omitempty" yaml:"command,omitempty"`
+
+	// StartAtLogin requests the VM be started automatically at user login.
+	StartAtLogin bool `json:"start_at_login,omitempty" yaml:"start_at_login,omitempty"`
 }

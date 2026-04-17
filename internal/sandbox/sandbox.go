@@ -144,13 +144,14 @@ func resolveResources(spec api.SandboxSpec, prof api.Profile, cfgDefaults api.Sa
 	}
 
 	vmSpec := api.VMSpec{
-		Name:   spec.Name,
-		OS:     "Linux",
-		Arch:   "default",
-		CPU:    cpu,
-		Memory: memory,
-		Disk:   disk,
-		Ports:  spec.Ports,
+		Name:         spec.Name,
+		OS:           "Linux",
+		Arch:         "default",
+		CPU:          cpu,
+		Memory:       memory,
+		Disk:         disk,
+		Ports:        spec.Ports,
+		StartAtLogin: spec.StartAtLogin,
 	}
 
 	if hostPath := resolveMountHostPath(spec.Source); hostPath != "" {

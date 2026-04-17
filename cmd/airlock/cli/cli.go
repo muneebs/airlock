@@ -49,7 +49,7 @@ func FromBootstrap(d *bootstrap.Dependencies) *Dependencies {
 		Profiles:    d.Profiles,
 		Detector:    d.Detector,
 		ConfigDir:   d.ConfigDir,
-		IsTTY:       isTerminal(os.Stdout),
+		IsTTY:       isTerminal(os.Stdin) && isTerminal(os.Stdout),
 	}
 }
 
@@ -792,6 +792,10 @@ Examples:
 			}
 
 			// Run the wizard
+			if !deps.IsTTY {
+				return fmt.Errorf("init requires an interactive terminal (TTY)")
+			}
+
 			result, err := wizard.Run(source)
 			if err != nil {
 				return err

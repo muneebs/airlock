@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muneebs/airlock/internal/config"
 )
 
 // Styles for the wizard UI.
@@ -261,6 +262,7 @@ func Run(source string) (*WizardResult, error) {
 	// Step 7: Confirmation
 	cpu, memory := MapResourceLevel(result.ResourceLevel)
 	profileName := MapTrustLevelToProfile(result.TrustLevel)
+	defaults := config.Defaults()
 
 	fmt.Println()
 	fmt.Println(titleStyle.Render("Sandbox Summary"))
@@ -268,7 +270,7 @@ func Run(source string) (*WizardResult, error) {
 	fmt.Printf("  Name:        %s\n", result.Name)
 	fmt.Printf("  Source:      %s\n", result.Source)
 	fmt.Printf("  Security:    %s\n", profileName)
-	fmt.Printf("  Resources:   %d CPU, %s RAM, 20GB disk\n", cpu, memory)
+	fmt.Printf("  Resources:   %d CPU, %s RAM, %s disk\n", cpu, memory, defaults.VM.Disk)
 	fmt.Printf("  Network:     %s\n", getNetworkDescription(result.NetworkLevel))
 	fmt.Printf("  Auto-start:  %s\n", boolToYesNo(result.StartAtLogin))
 	fmt.Printf("  Config:      %s\n", boolToYesNo(result.SaveConfig)+" (airlock.toml)")
