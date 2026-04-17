@@ -348,7 +348,8 @@ func (p *LimaProvider) Shell(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, p.limactlPath, "shell", name)
+	workdir := "/home/airlock/projects/" + name
+	cmd := exec.CommandContext(ctx, p.limactlPath, "shell", "--workdir", workdir, name)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
