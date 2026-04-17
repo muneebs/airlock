@@ -53,6 +53,8 @@ jobs:
       contents: write
     runs-on: macos-latest
     timeout-minutes: 20
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
