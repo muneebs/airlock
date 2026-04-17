@@ -96,7 +96,11 @@ func (p *LimaProvider) Start(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
-	_, err := p.runCmdDetached(ctx, "start", name)
+	// --tty=false is required when the caller may not own a TTY (e.g. the
+	// `airlock init` wizard handed its TTY to huh, or CI). Without it,
+	// limactl renders progress via an interactive terminal writer that
+	// corrupts or blocks on a non-tty stdout.
+	_, err := p.runCmdDetached(ctx, "start", "--tty=false", name)
 	if err != nil {
 		return fmt.Errorf("start VM %s: %w", name, err)
 	}
@@ -108,7 +112,7 @@ func (p *LimaProvider) Stop(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
-	_, err := p.runCmd(ctx, "stop", name)
+	_, err := p.runCmd(ctx, "stop", "--tty=false", name)
 	if err != nil {
 		return fmt.Errorf("stop VM %s: %w", name, err)
 	}
@@ -120,7 +124,7 @@ func (p *LimaProvider) Delete(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
-	_, err := p.runCmd(ctx, "delete", name)
+	_, err := p.runCmd(ctx, "delete", "--tty=false", name)
 	if err != nil {
 		return fmt.Errorf("delete VM %s: %w", name, err)
 	}
