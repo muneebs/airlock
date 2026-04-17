@@ -179,22 +179,13 @@ func mergeWithDefaults(cfg Config) Config {
 	return cfg
 }
 
+// validate enforces structural rules owned by the config package itself:
+// mount paths must be relative and free of traversal, services.compose must
+// be relative. Profile and runtime membership are NOT checked here — those
+// are open sets owned by profile.Registry and detect.CompositeDetector, and
+// are checked via ValidateDynamic once those registries are available. This
+// keeps config free of hardcoded plugin lists (PRINCIPLES.md §4 DRY, §5 OCP).
 func validate(cfg Config) error {
-	validProfiles := map[string]bool{
-		"strict": true, "cautious": true, "dev": true, "trusted": true, "": true,
-	}
-	if !validProfiles[cfg.Security.Profile] {
-		return fmt.Errorf("unknown security profile: %q (valid: strict, cautious, dev, trusted)", cfg.Security.Profile)
-	}
-
-	validRuntimes := map[string]bool{
-		"node": true, "go": true, "rust": true, "python": true,
-		"docker": true, "compose": true, "make": true, "dotnet": true, "": true,
-	}
-	if cfg.Runtime.Type != "" && !validRuntimes[cfg.Runtime.Type] {
-		return fmt.Errorf("unknown runtime type: %q", cfg.Runtime.Type)
-	}
-
 	if cfg.Services.Compose != "" {
 		if strings.HasPrefix(cfg.Services.Compose, "/") {
 			return fmt.Errorf("services.compose must be a relative path, got: %s", cfg.Services.Compose)
@@ -216,6 +207,38 @@ func validate(cfg Config) error {
 	}
 
 	return nil
+}
+
+// ValidateDynamic checks cfg against the open sets of known profiles and
+// runtime types. Callers pass in the currently-registered names (from
+// api.ProfileRegistry.List() and api.RuntimeDetector.SupportedTypes()), so
+// adding a new profile or runtime requires no edit to this package.
+//
+// An empty profile or runtime is always allowed (means "use default" or
+// "auto-detect"). Nil slices skip the check for that dimension.
+func ValidateDynamic(cfg Config, profileNames []string, runtimeTypes []string) error {
+	if cfg.Security.Profile != "" && profileNames != nil {
+		if !contains(profileNames, cfg.Security.Profile) {
+			return fmt.Errorf("unknown security profile: %q (valid: %s)", cfg.Security.Profile, strings.Join(profileNames, ", "))
+		}
+	}
+
+	if cfg.Runtime.Type != "" && runtimeTypes != nil {
+		if !contains(runtimeTypes, cfg.Runtime.Type) {
+			return fmt.Errorf("unknown runtime type: %q (valid: %s)", cfg.Runtime.Type, strings.Join(runtimeTypes, ", "))
+		}
+	}
+
+	return nil
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // WriteTOML serializes a Config to TOML format.

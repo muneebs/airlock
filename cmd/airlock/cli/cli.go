@@ -73,6 +73,34 @@ func ExecuteWithDeps(ctx context.Context, deps *Dependencies) error {
 	return newRootCmd(os.Stdout, os.Stderr, deps).ExecuteContext(ctx)
 }
 
+// loadAndValidateConfig reads airlock config from dir and validates its
+// open-set fields (profile name, runtime type) against the deps registries.
+// This keeps the concrete list of valid profiles/runtimes out of the
+// config package — they come from the plugin registries (PRINCIPLES.md §5 OCP).
+func loadAndValidateConfig(dir string, deps *Dependencies) (config.Config, error) {
+	cfg, err := config.Load(dir)
+	if err != nil {
+		return config.Config{}, err
+	}
+
+	var profileNames []string
+	if deps != nil && deps.Profiles != nil {
+		profileNames = deps.Profiles.List()
+	}
+
+	var runtimeTypes []string
+	if deps != nil && deps.Detector != nil {
+		for _, t := range deps.Detector.SupportedTypes() {
+			runtimeTypes = append(runtimeTypes, string(t))
+		}
+	}
+
+	if err := config.ValidateDynamic(cfg, profileNames, runtimeTypes); err != nil {
+		return config.Config{}, fmt.Errorf("invalid config: %w", err)
+	}
+	return cfg, nil
+}
+
 func isTerminal(f *os.File) bool {
 	fi, err := f.Stat()
 	if err != nil {
@@ -108,7 +136,7 @@ func newRootCmd(stdout, stderr io.Writer, deps *Dependencies) *cobra.Command {
 		newDestroyCmd(deps),
 		newLockCmd(deps),
 		newUnlockCmd(deps),
-		newConfigCmd(),
+		newConfigCmd(deps),
 		newProfileCmd(deps),
 		newVersionCmd(),
 	)
@@ -141,7 +169,7 @@ before creating any sandboxes.`,
 				nodeVersion = 22
 			}
 
-			cfg, err := config.Load(".")
+			cfg, err := loadAndValidateConfig(".", deps)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
@@ -254,7 +282,7 @@ Security profiles:
 				name = deriveSandboxName(source)
 			}
 
-			cfg, err := config.Load(".")
+			cfg, err := loadAndValidateConfig(".", deps)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
@@ -663,7 +691,7 @@ func newUnlockCmd(deps *Dependencies) *cobra.Command {
 	}
 }
 
-func newConfigCmd() *cobra.Command {
+func newConfigCmd(deps *Dependencies) *cobra.Command {
 	var showFormat string
 
 	cmd := &cobra.Command{
@@ -673,7 +701,7 @@ func newConfigCmd() *cobra.Command {
 directory. If no config file exists, shows defaults. Supports --format=toml
 or --format=yaml output.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(".")
+			cfg, err := loadAndValidateConfig(".", deps)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
