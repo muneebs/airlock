@@ -11,19 +11,18 @@ import (
 	"sync/atomic"
 
 	"github.com/muneebs/airlock/cmd/airlock/cli/tui"
+	"github.com/muneebs/airlock/cmd/airlock/cli/wizard"
 	"github.com/muneebs/airlock/internal/api"
+	"github.com/muneebs/airlock/internal/bootstrap"
 	"github.com/muneebs/airlock/internal/config"
-	"github.com/muneebs/airlock/internal/detect"
-	"github.com/muneebs/airlock/internal/mount"
-	"github.com/muneebs/airlock/internal/network"
-	"github.com/muneebs/airlock/internal/profile"
-	"github.com/muneebs/airlock/internal/sandbox"
-	"github.com/muneebs/airlock/internal/vm/lima"
 	"github.com/spf13/cobra"
 )
 
 var version = "0.1.0"
 
+// Dependencies bundles the fully-wired interface values a command needs.
+// It is built by internal/bootstrap and injected here — the cli package
+// must not import concrete backends (see PRINCIPLES.md §5, DIP).
 type Dependencies struct {
 	Manager     api.SandboxManager
 	Provider    api.Provider
@@ -32,76 +31,74 @@ type Dependencies struct {
 	Mounts      api.MountManager
 	Network     api.NetworkController
 	Profiles    api.ProfileRegistry
+	Detector    api.RuntimeDetector
 	ConfigDir   string
 	IsTTY       bool
+}
+
+// FromBootstrap adapts a bootstrap-assembled graph into cli.Dependencies,
+// filling in TTY detection which is a presentation concern owned by cli.
+func FromBootstrap(d *bootstrap.Dependencies) *Dependencies {
+	return &Dependencies{
+		Manager:     d.Manager,
+		Provider:    d.Provider,
+		Provisioner: d.Provisioner,
+		Sheller:     d.Sheller,
+		Mounts:      d.Mounts,
+		Network:     d.Network,
+		Profiles:    d.Profiles,
+		Detector:    d.Detector,
+		ConfigDir:   d.ConfigDir,
+		IsTTY:       isTerminal(os.Stdin) && isTerminal(os.Stdout),
+	}
 }
 
 func Execute() error {
 	return ExecuteContext(context.Background())
 }
 
-// ExecuteContext runs the root command with the given context. The context
-// is propagated to all subcommands so SIGINT/SIGTERM can cancel in-flight
-// work and trigger rollback paths.
+// ExecuteContext assembles default dependencies via bootstrap and runs the
+// root command with the given context. Use ExecuteWithDeps for tests or
+// alternative wirings.
 func ExecuteContext(ctx context.Context) error {
-	deps, err := assembleDependencies()
+	boot, err := bootstrap.Assemble()
 	if err != nil {
 		return fmt.Errorf("initialize: %w", err)
 	}
+	return ExecuteWithDeps(ctx, FromBootstrap(boot))
+}
+
+// ExecuteWithDeps runs the root command against caller-supplied dependencies.
+func ExecuteWithDeps(ctx context.Context, deps *Dependencies) error {
 	return newRootCmd(os.Stdout, os.Stderr, deps).ExecuteContext(ctx)
 }
 
-func assembleDependencies() (*Dependencies, error) {
-	home, err := os.UserHomeDir()
+// loadAndValidateConfig reads airlock config from dir and validates its
+// open-set fields (profile name, runtime type) against the deps registries.
+// This keeps the concrete list of valid profiles/runtimes out of the
+// config package — they come from the plugin registries (PRINCIPLES.md §5 OCP).
+func loadAndValidateConfig(dir string, deps *Dependencies) (config.Config, error) {
+	cfg, err := config.Load(dir)
 	if err != nil {
-		return nil, fmt.Errorf("get home dir: %w", err)
-	}
-	configDir := filepath.Join(home, ".airlock")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return nil, fmt.Errorf("create config dir: %w", err)
+		return config.Config{}, err
 	}
 
-	limaProvider, err := lima.NewLimaProvider()
-	if err != nil {
-		return nil, fmt.Errorf("init lima provider: %w", err)
+	var profileNames []string
+	if deps != nil && deps.Profiles != nil {
+		profileNames = deps.Profiles.List()
 	}
 
-	detector := detect.NewCompositeDetector()
-	profiles := profile.NewRegistry()
-
-	mountStore, err := mount.NewJSONStore(filepath.Join(configDir, "mounts.json"))
-	if err != nil {
-		return nil, fmt.Errorf("init mount store: %w", err)
+	var runtimeTypes []string
+	if deps != nil && deps.Detector != nil {
+		for _, t := range deps.Detector.SupportedTypes() {
+			runtimeTypes = append(runtimeTypes, string(t))
+		}
 	}
 
-	storePath := filepath.Join(configDir, "sandboxes.json")
-
-	networkCtrl := network.NewLimaController()
-
-	mgr, err := sandbox.NewManager(
-		limaProvider,
-		limaProvider,
-		detector,
-		profiles,
-		mountStore,
-		networkCtrl,
-		storePath,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("init sandbox manager: %w", err)
+	if err := config.ValidateDynamic(cfg, profileNames, runtimeTypes); err != nil {
+		return config.Config{}, fmt.Errorf("invalid config: %w", err)
 	}
-
-	return &Dependencies{
-		Manager:     mgr,
-		Provider:    limaProvider,
-		Provisioner: limaProvider,
-		Sheller:     limaProvider,
-		Mounts:      mountStore,
-		Network:     networkCtrl,
-		Profiles:    profiles,
-		ConfigDir:   configDir,
-		IsTTY:       isTerminal(os.Stdout),
-	}, nil
+	return cfg, nil
 }
 
 func isTerminal(f *os.File) bool {
@@ -126,6 +123,7 @@ func newRootCmd(stdout, stderr io.Writer, deps *Dependencies) *cobra.Command {
 	root.SetErr(stderr)
 
 	root.AddCommand(
+		newInitCmd(deps),
 		newSetupCmd(deps),
 		newSandboxCmd(deps),
 		newRunCmd(deps),
@@ -138,7 +136,7 @@ func newRootCmd(stdout, stderr io.Writer, deps *Dependencies) *cobra.Command {
 		newDestroyCmd(deps),
 		newLockCmd(deps),
 		newUnlockCmd(deps),
-		newConfigCmd(),
+		newConfigCmd(deps),
 		newProfileCmd(deps),
 		newVersionCmd(),
 	)
@@ -171,7 +169,7 @@ before creating any sandboxes.`,
 				nodeVersion = 22
 			}
 
-			cfg, err := config.Load(".")
+			cfg, err := loadAndValidateConfig(".", deps)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
@@ -284,7 +282,7 @@ Security profiles:
 				name = deriveSandboxName(source)
 			}
 
-			cfg, err := config.Load(".")
+			cfg, err := loadAndValidateConfig(".", deps)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
@@ -693,7 +691,7 @@ func newUnlockCmd(deps *Dependencies) *cobra.Command {
 	}
 }
 
-func newConfigCmd() *cobra.Command {
+func newConfigCmd(deps *Dependencies) *cobra.Command {
 	var showFormat string
 
 	cmd := &cobra.Command{
@@ -703,7 +701,7 @@ func newConfigCmd() *cobra.Command {
 directory. If no config file exists, shows defaults. Supports --format=toml
 or --format=yaml output.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(".")
+			cfg, err := loadAndValidateConfig(".", deps)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
@@ -757,6 +755,168 @@ func newProfileCmd(deps *Dependencies) *cobra.Command {
 				table.AddRow(profileStyle.Render(p.Name), p.Description)
 			}
 			fmt.Fprint(cmd.OutOrStdout(), table.Render())
+			return nil
+		},
+	}
+}
+
+func newInitCmd(deps *Dependencies) *cobra.Command {
+	return &cobra.Command{
+		Use:   "init [path-or-url]",
+		Short: "Interactive wizard to create a new sandbox",
+		Long: `Launch an interactive wizard that guides you through creating a secure sandbox.
+
+The wizard will ask you simple questions about:
+- What software you want to run
+- How much you trust it
+- What resources it needs
+- Network access requirements
+
+It then creates the appropriate configuration and optionally the sandbox itself.
+
+Examples:
+  airlock init                    # Wizard for current directory
+  airlock init ./my-project       # Wizard for specific directory
+  airlock init gh:user/repo       # Wizard for GitHub repository`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+
+			// Determine source
+			source := "."
+			if len(args) > 0 {
+				source = args[0]
+			}
+
+			// Run the wizard
+			if !deps.IsTTY {
+				return fmt.Errorf("init requires an interactive terminal (TTY)")
+			}
+
+			result, err := wizard.Run(source)
+			if err != nil {
+				return err
+			}
+
+			// Detect runtime using injected detector (no concrete import)
+			var runtime string
+			if result.Source != "" && deps.Detector != nil {
+				detected, err := deps.Detector.Detect(result.Source)
+				if err == nil {
+					runtime = string(detected.Type)
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Note: could not auto-detect runtime: %v\n", err)
+				}
+			}
+
+			// Save config if requested
+			wizardCfg := result.ToConfig(runtime)
+
+			if result.SaveConfig {
+				// Determine target directory for config
+				var configDir string
+				if strings.HasPrefix(result.Source, "gh:") || strings.HasPrefix(result.Source, "https://") {
+					// For remote sources, use current directory
+					configDir = "."
+				} else {
+					configDir = result.Source
+					if err := os.MkdirAll(configDir, 0755); err != nil {
+						return fmt.Errorf("create config directory: %w", err)
+					}
+				}
+
+				if err := config.Save(configDir, wizardCfg); err != nil {
+					return fmt.Errorf("save configuration: %w", err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "\n%s\n", tui.SuccessLine("Configuration saved to %s/airlock.toml", configDir))
+			}
+
+			// Create sandbox if requested
+			if result.CreateNow {
+				spec := result.ToSandboxSpec(runtime)
+
+				var createStage atomic.Value
+				createStage.Store("starting")
+
+				phases := []tui.Phase{
+					{
+						Label:     "Creating VM " + spec.Name + " (fresh Ubuntu boot takes 5–7 min)",
+						DoneLabel: "VM " + spec.Name + " created and booted",
+						Action: func() error {
+							_, err := deps.Manager.CreateWithOptions(ctx, spec, api.CreateOptions{
+								Progress: func(stage string) {
+									createStage.Store(stage)
+								},
+								SkipNetworkPolicy: true,
+							})
+							return err
+						},
+						Status: func() string {
+							s, _ := createStage.Load().(string)
+							return s
+						},
+					},
+				}
+
+				// Add provisioning steps
+				for _, step := range deps.Provisioner.ProvisionSteps(spec.Name, wizardCfg.VM.NodeVersion) {
+					step := step
+					phases = append(phases, tui.Phase{
+						Label:     step.Label,
+						DoneLabel: step.Label,
+						Action:    func() error { return step.Run(ctx) },
+					})
+				}
+
+				// Apply network policy
+				phases = append(phases, tui.Phase{
+					Label:     "Applying network policy",
+					DoneLabel: "Network policy applied",
+					Action: func() error {
+						return deps.Manager.ApplyNetworkProfile(ctx, spec.Name)
+					},
+				})
+
+				// Enforce user's network choice over profile default.
+				switch result.NetworkLevel {
+				case wizard.NetworkNone, wizard.NetworkDownloads:
+					phases = append(phases, tui.Phase{
+						Label:     "Locking network",
+						DoneLabel: "Network locked",
+						Action: func() error {
+							return deps.Network.Lock(ctx, spec.Name)
+						},
+					})
+				case wizard.NetworkOngoing:
+					phases = append(phases, tui.Phase{
+						Label:     "Unlocking network",
+						DoneLabel: "Network unlocked",
+						Action: func() error {
+							return deps.Network.Unlock(ctx, spec.Name)
+						},
+					})
+				}
+
+				// Save snapshot
+				phases = append(phases, tui.Phase{
+					Label:     "Saving clean snapshot",
+					DoneLabel: "Snapshot saved",
+					Action: func() error {
+						return deps.Provisioner.SnapshotClean(ctx, spec.Name)
+					},
+				})
+
+				if err := tui.RunPhases(phases); err != nil {
+					return err
+				}
+
+				fmt.Fprintf(cmd.OutOrStdout(), "\n%s\n", tui.SuccessLine("Sandbox %q is ready to use.", spec.Name))
+				fmt.Fprintf(cmd.OutOrStdout(), "\nRun 'airlock shell %s' to enter the sandbox, or 'airlock run %s -- <command>' to run commands.\n", spec.Name, spec.Name)
+			}
+
 			return nil
 		},
 	}

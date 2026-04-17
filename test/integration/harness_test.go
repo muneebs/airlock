@@ -73,15 +73,18 @@ func newHarness(t *testing.T) *harness {
     printf '{"name":"%s","status":"Stopped"}\n' "$name" > "$SDIR/$name.json"
     ;;
   start)
-    name="$2"
+    shift
+    for arg in "$@"; do case "$arg" in --*) ;; *) name="$arg" ;; esac; done
     printf '{"name":"%s","status":"Running"}\n' "$name" > "$SDIR/$name.json"
     ;;
   stop)
-    name="$2"
+    shift
+    for arg in "$@"; do case "$arg" in --*) ;; *) name="$arg" ;; esac; done
     printf '{"name":"%s","status":"Stopped"}\n' "$name" > "$SDIR/$name.json"
     ;;
   delete)
-    name="$2"
+    shift
+    for arg in "$@"; do case "$arg" in --*) ;; *) name="$arg" ;; esac; done
     rm -f "$SDIR/$name.json"
     ;;
   shell)

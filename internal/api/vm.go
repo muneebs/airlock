@@ -59,6 +59,9 @@ type VMSpec struct {
 
 	// ProvisionCmds run once after first boot.
 	ProvisionCmds []string `json:"provision_cmds" yaml:"provision_cmds"`
+
+	// StartAtLogin starts the VM automatically when the user logs in.
+	StartAtLogin bool `json:"start_at_login,omitempty" yaml:"start_at_login,omitempty"`
 }
 
 // VMMount describes a host directory to mount inside the VM.

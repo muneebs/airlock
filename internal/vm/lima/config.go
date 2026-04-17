@@ -54,6 +54,7 @@ type LimaConfig struct {
 	Mounts       []LimaMount       `yaml:"mounts"`
 	PortForwards []LimaPortForward `yaml:"portForwards,omitempty"`
 	Provision    []LimaProvision   `yaml:"provision,omitempty"`
+	StartAtLogin bool              `yaml:"startAtLogin,omitempty"`
 }
 
 type LimaImage struct {
@@ -86,13 +87,14 @@ func GenerateConfig(spec api.VMSpec) (string, error) {
 	}
 
 	cfg := LimaConfig{
-		VMType:    "vz",
-		OS:        "Linux",
-		Arch:      "default",
-		CPUs:      spec.CPU,
-		Memory:    spec.Memory,
-		Disk:      spec.Disk,
-		MountType: "virtiofs",
+		VMType:       "vz",
+		OS:           "Linux",
+		Arch:         "default",
+		CPUs:         spec.CPU,
+		Memory:       spec.Memory,
+		Disk:         spec.Disk,
+		MountType:    "virtiofs",
+		StartAtLogin: spec.StartAtLogin,
 		Images: []LimaImage{
 			{Location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img", Arch: "aarch64"},
 			{Location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img", Arch: "x86_64"},

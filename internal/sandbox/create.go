@@ -108,7 +108,7 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 
 	if !opts.SkipNetworkPolicy {
 		report("applying network policy")
-		if err := m.applyNetworkPolicy(ctx, spec.Name, prof); err != nil {
+		if err := m.applyNetworkPolicy(ctx, spec.Name, prof, spec.LockNetworkAfterSetup); err != nil {
 			m.mu.Lock()
 			info.State = api.StateErrored
 			_ = m.put(info)
@@ -194,22 +194,27 @@ func (m *Manager) ApplyNetworkProfile(ctx context.Context, name string) error {
 	if perr != nil {
 		return fmt.Errorf("resolve profile %q: %w", info.Profile, perr)
 	}
-	return m.applyNetworkPolicy(ctx, name, prof)
+	return m.applyNetworkPolicy(ctx, name, prof, nil)
 }
 
-func (m *Manager) applyNetworkPolicy(ctx context.Context, name string, prof api.Profile) error {
+func (m *Manager) applyNetworkPolicy(ctx context.Context, name string, prof api.Profile, lockOverride *bool) error {
+	lockAfter := prof.Network.LockAfterSetup
+	if lockOverride != nil {
+		lockAfter = *lockOverride
+	}
+
 	policy := api.NetworkPolicy{
 		AllowDNS:         prof.Network.AllowDNS,
 		AllowOutbound:    prof.Network.AllowOutbound,
 		AllowEstablished: prof.Network.AllowEstablished,
-		LockAfterSetup:   prof.Network.LockAfterSetup,
+		LockAfterSetup:   lockAfter,
 	}
 
 	if err := m.network.ApplyPolicy(ctx, name, policy); err != nil {
 		return err
 	}
 
-	if prof.Network.LockAfterSetup {
+	if lockAfter {
 		if err := m.network.Lock(ctx, name); err != nil {
 			return err
 		}

@@ -284,37 +284,43 @@ func TestConfigFileDetection(t *testing.T) {
 	}
 }
 
-func TestValidateInvalidProfile(t *testing.T) {
-	dir := t.TempDir()
-	tomlContent := `
-[security]
-profile = "invalid"
-`
-	err := os.WriteFile(filepath.Join(dir, "airlock.toml"), []byte(tomlContent), 0644)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestValidateDynamicInvalidProfile(t *testing.T) {
+	cfg := Defaults()
+	cfg.Security.Profile = "invalid"
 
-	_, err = Load(dir)
+	err := ValidateDynamic(cfg, []string{"strict", "cautious"}, nil)
 	if err == nil {
 		t.Fatal("expected validation error for invalid profile")
 	}
 }
 
-func TestValidateInvalidRuntime(t *testing.T) {
-	dir := t.TempDir()
-	tomlContent := `
-[runtime]
-type = "cobol"
-`
-	err := os.WriteFile(filepath.Join(dir, "airlock.toml"), []byte(tomlContent), 0644)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestValidateDynamicInvalidRuntime(t *testing.T) {
+	cfg := Defaults()
+	cfg.Runtime.Type = "cobol"
 
-	_, err = Load(dir)
+	err := ValidateDynamic(cfg, nil, []string{"node", "go"})
 	if err == nil {
 		t.Fatal("expected validation error for invalid runtime")
+	}
+}
+
+func TestValidateDynamicAcceptsKnown(t *testing.T) {
+	cfg := Defaults()
+	cfg.Security.Profile = "cautious"
+	cfg.Runtime.Type = "go"
+
+	if err := ValidateDynamic(cfg, []string{"strict", "cautious"}, []string{"node", "go"}); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestValidateDynamicNilSkipsChecks(t *testing.T) {
+	cfg := Defaults()
+	cfg.Security.Profile = "anything"
+	cfg.Runtime.Type = "anything"
+
+	if err := ValidateDynamic(cfg, nil, nil); err != nil {
+		t.Fatalf("nil registries should skip check, got %v", err)
 	}
 }
 

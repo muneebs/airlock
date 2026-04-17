@@ -166,7 +166,13 @@ func (p *LimaProvider) ProvisionSteps(name string, nodeVersion int) []api.Provis
 		{fmt.Sprintf("Installing Node.js %d", nodeVersion), "node.js", []string{"sudo", "bash", "-c", fmt.Sprintf("curl -fsSL https://deb.nodesource.com/setup_%d.x | bash - && apt-get install -y nodejs", nodeVersion)}},
 		{"Installing pnpm", "pnpm", []string{"sudo", "npm", "install", "-g", "pnpm"}},
 		{"Creating airlock user", "create airlock user", []string{"sudo", "bash", "-c", "id airlock &>/dev/null || useradd -m -s /bin/bash airlock"}},
-		{"Preparing airlock home", "setup airlock dirs", []string{"sudo", "bash", "-c", "mkdir -p /home/airlock/.npm-global /home/airlock/projects && chown -R airlock:airlock /home/airlock"}},
+		// chown must be -xdev so it does not descend into virtiofs mounts
+		// (e.g. /home/airlock/projects/<name>) where chown returns EPERM.
+		// chown must skip virtiofs mount points under /home/airlock/projects/*
+		// (EPERM across fs boundary). -xdev alone still visits the mountpoint
+		// entry itself, so prune /home/airlock/projects explicitly and chown
+		// only that directory (not its contents).
+		{"Preparing airlock home", "setup airlock dirs", []string{"sudo", "bash", "-c", "mkdir -p /home/airlock/.npm-global /home/airlock/projects && find /home/airlock -xdev -path /home/airlock/projects -prune -o -print0 | xargs -0 chown airlock:airlock && chown airlock:airlock /home/airlock/projects"}},
 		{"Configuring npm prefix", "npm prefix", []string{"sudo", "-u", "airlock", "bash", "--login", "-c", "npm config set prefix /home/airlock/.npm-global"}},
 	}
 

@@ -144,18 +144,19 @@ func resolveResources(spec api.SandboxSpec, prof api.Profile, cfgDefaults api.Sa
 	}
 
 	vmSpec := api.VMSpec{
-		Name:   spec.Name,
-		OS:     "Linux",
-		Arch:   "default",
-		CPU:    cpu,
-		Memory: memory,
-		Disk:   disk,
-		Ports:  spec.Ports,
+		Name:         spec.Name,
+		OS:           "Linux",
+		Arch:         "default",
+		CPU:          cpu,
+		Memory:       memory,
+		Disk:         disk,
+		Ports:        spec.Ports,
+		StartAtLogin: spec.StartAtLogin,
 	}
 
-	if spec.Source != "" {
+	if hostPath := resolveMountHostPath(spec.Source); hostPath != "" {
 		vmSpec.Mounts = append(vmSpec.Mounts, api.VMMount{
-			HostPath:  spec.Source,
+			HostPath:  hostPath,
 			GuestPath: "/home/airlock/projects/" + spec.Name,
 			Writable:  prof.Mount.Writable,
 			Inotify:   true,
@@ -163,6 +164,31 @@ func resolveResources(spec api.SandboxSpec, prof api.Profile, cfgDefaults api.Sa
 	}
 
 	return vmSpec
+}
+
+// resolveMountHostPath turns a SandboxSpec.Source into an absolute host
+// path suitable for a Lima mount. Lima rejects relative paths — see
+// `mounts[0].location must be an absolute path`. Remote sources
+// (gh:..., https://...) return "" because they are cloned into the VM,
+// not mounted from the host.
+func resolveMountHostPath(source string) string {
+	if source == "" || isRemoteSource(source) {
+		return ""
+	}
+	abs, err := filepath.Abs(source)
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
+func isRemoteSource(source string) bool {
+	for _, prefix := range []string{"gh:", "https://", "http://", "git@"} {
+		if len(source) >= len(prefix) && source[:len(prefix)] == prefix {
+			return true
+		}
+	}
+	return false
 }
 
 // ErrNotFound is returned when a sandbox name does not exist.

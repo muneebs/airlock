@@ -1,5 +1,4 @@
 # Build output
-airlock
 /airlock
 *.exe
 *.exe~
@@ -39,3 +38,7 @@ Thumbs.db
 
 # Local task tracker
 TASKS.md
+
+# Wizard-generated project config (not repo config)
+airlock.toml
+
