@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -15,19 +16,19 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.24"
 
       - name: Build
-        run: go build ./...
+        run: make build
 
       - name: Vet
-        run: go vet ./...
+        run: make vet
 
       - name: Unit tests
-        run: go test ./internal/... -count=1 -race
+        run: make test-unit
 
       - name: Integration tests
-        run: go test ./test/integration/... -count=1 -race
+        run: make test-integration
 
   lint:
     runs-on: ubuntu-latest
@@ -37,12 +38,30 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.24"
 
       - name: Run gofmt
-        run: |
-          output=$(gofmt -d .)
-          if [ -n "$output" ]; then
-            echo "$output"
-            exit 1
-          fi
+        run: make fmt
+
+  release:
+    needs: [test, lint]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Run goreleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

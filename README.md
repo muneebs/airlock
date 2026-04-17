@@ -4,6 +4,14 @@ Run untrusted software in isolated Lima VMs on macOS. Each sandbox gets its own 
 
 ## Install
 
+**One-liner (recommended):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/muneebs/airlock/main/install.sh | bash
+```
+
+Downloads a pre-built binary from [GitHub Releases](https://github.com/muneebs/airlock/releases).
+
 **From source (requires Go 1.23+):**
 
 ```bash
@@ -12,13 +20,7 @@ cd airlock
 make install
 ```
 
-**One-liner (also installs Lima, jq, yq):**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/muneebs/airlock/main/install.sh | bash
-```
-
-**Requirements:** macOS (Apple Silicon or Intel) with [Lima](https://github.com/lima-vm/lima) installed.
+**Prerequisites:** macOS (Apple Silicon or Intel) with [Lima](https://github.com/lima-vm/lima) installed.
 
 ## Quick start
 
