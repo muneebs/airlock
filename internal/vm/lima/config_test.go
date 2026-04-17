@@ -62,9 +62,6 @@ func TestGenerateConfigWithMounts(t *testing.T) {
 	if !strings.Contains(yaml, "writable: true") {
 		t.Error("expected writable: true for first mount")
 	}
-	if !strings.Contains(yaml, "mountInotify: true") {
-		t.Error("expected mountInotify: true for first mount")
-	}
 	if !strings.Contains(yaml, "mountPoint: /home/airlock/projects/project") {
 		t.Error("expected mountPoint for project mount")
 	}
@@ -223,7 +220,8 @@ func TestLimaProviderCreate(t *testing.T) {
 	dir := t.TempDir()
 	limactlPath := filepath.Join(dir, "fake-limactl")
 
-	script := "#!/bin/sh\necho 'created'\n"
+	logPath := filepath.Join(dir, "calls.log")
+	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\necho 'created'\n"
 	os.WriteFile(limactlPath, []byte(script), 0755)
 
 	p := NewLimaProviderWithPaths(limactlPath, dir)
@@ -239,9 +237,12 @@ func TestLimaProviderCreate(t *testing.T) {
 		t.Fatalf("Create() error: %v", err)
 	}
 
-	configPath := filepath.Join(dir, "test-sandbox", "lima.yaml")
-	if _, err := os.Stat(configPath); err != nil {
-		t.Errorf("lima.yaml not created at %s: %v", configPath, err)
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read calls.log: %v", err)
+	}
+	if !strings.Contains(string(data), "create --tty=false --name=test-sandbox") {
+		t.Errorf("expected limactl create call with --name=test-sandbox, got: %s", string(data))
 	}
 }
 

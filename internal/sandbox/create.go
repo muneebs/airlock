@@ -35,9 +35,12 @@ func (m *Manager) Create(ctx context.Context, spec api.SandboxSpec) (api.Sandbox
 	info := newSandboxInfo(spec, string(runtimeType), profName)
 
 	m.mu.Lock()
-	if _, exists := m.sandboxes[spec.Name]; exists {
-		m.mu.Unlock()
-		return api.SandboxInfo{}, ErrAlreadyExists{Name: spec.Name}
+	if existing, exists := m.sandboxes[spec.Name]; exists {
+		if existing.State != api.StateErrored {
+			m.mu.Unlock()
+			return api.SandboxInfo{}, ErrAlreadyExists{Name: spec.Name}
+		}
+		_ = m.remove(spec.Name)
 	}
 	if err := m.put(info); err != nil {
 		m.mu.Unlock()

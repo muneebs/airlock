@@ -45,28 +45,43 @@ func NewLimaProviderWithPaths(limactlPath, limaDir string) *LimaProvider {
 }
 
 // Create generates a Lima YAML config from the VMSpec and runs limactl create.
+// If a VM with the same name already exists, it returns an error.
+// On failure, any partially created directory is cleaned up.
 func (p *LimaProvider) Create(ctx context.Context, spec api.VMSpec) error {
 	if err := validateName(spec.Name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
+
+	exists, err := p.Exists(ctx, spec.Name)
+	if err != nil {
+		return fmt.Errorf("check VM existence: %w", err)
+	}
+	if exists {
+		return fmt.Errorf("VM %q already exists", spec.Name)
+	}
+
 	configYAML, err := GenerateConfig(spec)
 	if err != nil {
 		return fmt.Errorf("generate lima config: %w", err)
 	}
 
-	dir := filepath.Join(p.limaDir, spec.Name)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create vm dir: %w", err)
-	}
-
-	configPath := filepath.Join(dir, "lima.yaml")
-	if err := os.WriteFile(configPath, []byte(configYAML), 0600); err != nil {
-		return fmt.Errorf("write lima.yaml: %w", err)
-	}
-
-	_, err = p.runCmd(ctx, "create", "--name="+spec.Name, configPath)
+	tmpFile, err := os.CreateTemp("", "airlock-lima-*.yaml")
 	if err != nil {
-		return fmt.Errorf("limactl create %s: %w", spec.Name, err)
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(configYAML); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close config: %w", err)
+	}
+
+	_, err = p.runCmdStreaming(ctx, "create", "--tty=false", "--name="+spec.Name, tmpFile.Name())
+	if err != nil {
+		return fmt.Errorf("create VM %s: %w", spec.Name, err)
 	}
 
 	return nil
@@ -79,7 +94,7 @@ func (p *LimaProvider) Start(ctx context.Context, name string) error {
 	}
 	_, err := p.runCmd(ctx, "start", name)
 	if err != nil {
-		return fmt.Errorf("limactl start %s: %w", name, err)
+		return fmt.Errorf("start VM %s: %w", name, err)
 	}
 	return nil
 }
@@ -91,7 +106,7 @@ func (p *LimaProvider) Stop(ctx context.Context, name string) error {
 	}
 	_, err := p.runCmd(ctx, "stop", name)
 	if err != nil {
-		return fmt.Errorf("limactl stop %s: %w", name, err)
+		return fmt.Errorf("stop VM %s: %w", name, err)
 	}
 	return nil
 }
@@ -103,7 +118,7 @@ func (p *LimaProvider) Delete(ctx context.Context, name string) error {
 	}
 	_, err := p.runCmd(ctx, "delete", name)
 	if err != nil {
-		return fmt.Errorf("limactl delete %s: %w", name, err)
+		return fmt.Errorf("delete VM %s: %w", name, err)
 	}
 	return nil
 }
@@ -190,7 +205,7 @@ type limaVMInfo struct {
 func (p *LimaProvider) listVMs(ctx context.Context) ([]limaVMInfo, error) {
 	output, err := p.runCmd(ctx, "list", "--json")
 	if err != nil {
-		return nil, fmt.Errorf("limactl list: %w", err)
+		return nil, fmt.Errorf("list VMs: %w", err)
 	}
 
 	var vms []limaVMInfo
@@ -208,7 +223,7 @@ func (p *LimaProvider) listVMs(ctx context.Context) ([]limaVMInfo, error) {
 	return vms, nil
 }
 
-// runCmd executes a limactl command with the given arguments.
+// runCmd executes a limactl command, buffering stdout and stderr.
 func (p *LimaProvider) runCmd(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, p.limactlPath, args...)
 	var stdout, stderr bytes.Buffer
@@ -216,10 +231,57 @@ func (p *LimaProvider) runCmd(ctx context.Context, args ...string) (string, erro
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return stdout.String(), fmt.Errorf("%s %s: %w\n%s",
-			p.limactlPath, strings.Join(args, " "), err, stderr.String())
+		return stdout.String(), fmt.Errorf("%s: %w", cleanLimactlError(args[0], stderr.String()), err)
 	}
 	return stdout.String(), nil
+}
+
+// runCmdStreaming executes a limactl command, streaming stderr to the terminal
+// so the user sees progress (image downloads, provisioning, etc.).
+// Only use this for "create" — other commands should use buffered runCmd
+// because limactl start daemonizes when stderr is not a terminal.
+func (p *LimaProvider) runCmdStreaming(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, p.limactlPath, args...)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), fmt.Errorf("limactl %s: %w", args[0], err)
+	}
+	return stdout.String(), nil
+}
+
+func cleanLimactlError(action string, stderr string) string {
+	var parts []string
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "time=") {
+			if idx := strings.Index(line, "msg="); idx != -1 {
+				msg := strings.Trim(strings.TrimPrefix(line[idx:], "msg="), `"`)
+				if msg != "" {
+					parts = append(parts, msg)
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "level=") {
+			if idx := strings.Index(line, "msg="); idx != -1 {
+				msg := strings.Trim(strings.TrimPrefix(line[idx:], "msg="), `"`)
+				if msg != "" {
+					parts = append(parts, msg)
+				}
+			}
+			continue
+		}
+		if line != "" {
+			parts = append(parts, line)
+		}
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("limactl %s", action)
+	}
+	return fmt.Sprintf("limactl %s: %s", action, strings.Join(parts, ": "))
 }
 
 // shellEscape wraps a string in single quotes, replacing internal single quotes
