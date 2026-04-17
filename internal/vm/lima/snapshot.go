@@ -168,7 +168,11 @@ func (p *LimaProvider) ProvisionSteps(name string, nodeVersion int) []api.Provis
 		{"Creating airlock user", "create airlock user", []string{"sudo", "bash", "-c", "id airlock &>/dev/null || useradd -m -s /bin/bash airlock"}},
 		// chown must be -xdev so it does not descend into virtiofs mounts
 		// (e.g. /home/airlock/projects/<name>) where chown returns EPERM.
-		{"Preparing airlock home", "setup airlock dirs", []string{"sudo", "bash", "-c", "mkdir -p /home/airlock/.npm-global /home/airlock/projects && find /home/airlock -xdev -exec chown airlock:airlock {} +"}},
+		// chown must skip virtiofs mount points under /home/airlock/projects/*
+		// (EPERM across fs boundary). -xdev alone still visits the mountpoint
+		// entry itself, so prune /home/airlock/projects explicitly and chown
+		// only that directory (not its contents).
+		{"Preparing airlock home", "setup airlock dirs", []string{"sudo", "bash", "-c", "mkdir -p /home/airlock/.npm-global /home/airlock/projects && find /home/airlock -xdev -path /home/airlock/projects -prune -o -print0 | xargs -0 chown airlock:airlock && chown airlock:airlock /home/airlock/projects"}},
 		{"Configuring npm prefix", "npm prefix", []string{"sudo", "-u", "airlock", "bash", "--login", "-c", "npm config set prefix /home/airlock/.npm-global"}},
 	}
 
