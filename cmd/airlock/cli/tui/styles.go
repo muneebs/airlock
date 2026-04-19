@@ -209,8 +209,48 @@ func cleanErrorLine(line string) string {
 	return line
 }
 
+// indexLogField finds `key=` at a token boundary in a logfmt-style line,
+// ignoring occurrences inside quoted values. Returns -1 if the key is absent.
+func indexLogField(line, key string) int {
+	needle := key + "="
+	inQuote := false
+	escaped := false
+	atTokenStart := true
+
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inQuote {
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				inQuote = false
+			}
+			continue
+		}
+		switch c {
+		case ' ', '\t':
+			atTokenStart = true
+			continue
+		case '"':
+			inQuote = true
+			atTokenStart = false
+			continue
+		}
+		if atTokenStart && strings.HasPrefix(line[i:], needle) {
+			return i
+		}
+		atTokenStart = false
+	}
+	return -1
+}
+
 func extractLogMessage(line string) string {
-	idx := strings.Index(line, "msg=")
+	idx := indexLogField(line, "msg")
 	if idx == -1 {
 		return ""
 	}

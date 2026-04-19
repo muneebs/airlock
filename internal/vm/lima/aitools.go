@@ -2,7 +2,6 @@ package lima
 
 import (
 	"context"
-	"fmt"
 )
 
 // aiToolInstaller describes how to install one AI CLI tool inside a VM.
@@ -36,12 +35,13 @@ func aiToolRequiresNpm(tool string) bool {
 // npmInstallGlobal installs an npm package globally for the airlock user,
 // using their login shell so npm's per-user prefix applies.
 func npmInstallGlobal(ctx context.Context, p *LimaProvider, name, pkg string) error {
-	// %q quotes pkg so a hostile registered name cannot break out of the
-	// shell -c string. Today all callers pass static constants; defence in
-	// depth for future additions.
+	// Single-quote escape so shell metacharacters ($(...), backticks, $VAR)
+	// in pkg cannot break out of the bash -c string. Today all callers pass
+	// static constants; defence in depth for future additions. %q would emit
+	// a double-quoted literal, which bash still expands.
 	_, err := p.Exec(ctx, name, []string{
 		"sudo", "-u", "airlock", "bash", "--login", "-c",
-		fmt.Sprintf("npm install -g %q", pkg),
+		"npm install -g " + shellEscape(pkg),
 	})
 	return err
 }

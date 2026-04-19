@@ -3,6 +3,7 @@ package lima
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/muneebs/airlock/internal/api"
 )
@@ -101,7 +102,9 @@ func (p *LimaProvider) ProvisionSteps(name string, opts api.ProvisionOptions) []
 		steps = append(steps, api.ProvisionStep{
 			Label: "Installing Bun",
 			Run: func(ctx context.Context) error {
-				_ = p.installBun(ctx, name)
+				if err := p.installBun(ctx, name); err != nil {
+					warnOptionalInstall("Bun", err)
+				}
 				return nil
 			},
 		})
@@ -110,28 +113,49 @@ func (p *LimaProvider) ProvisionSteps(name string, opts api.ProvisionOptions) []
 		steps = append(steps, api.ProvisionStep{
 			Label: "Installing Docker",
 			Run: func(ctx context.Context) error {
-				_ = p.installDocker(ctx, name)
+				if err := p.installDocker(ctx, name); err != nil {
+					warnOptionalInstall("Docker", err)
+				}
 				return nil
 			},
 		})
 	}
 
+	// Dedup AITools preserving first-seen order. The wizard multi-select
+	// cannot produce duplicates, but `--ai-tool foo --ai-tool foo` on the
+	// CLI would otherwise queue the install twice.
+	seen := make(map[string]struct{}, len(opts.AITools))
 	for _, t := range opts.AITools {
+		if _, dup := seen[t]; dup {
+			continue
+		}
+		seen[t] = struct{}{}
 		tool, ok := lookupAITool(t)
 		if !ok {
 			continue
 		}
 		install := tool.Install
+		label := tool.Label
 		steps = append(steps, api.ProvisionStep{
-			Label: tool.Label,
+			Label: label,
 			Run: func(ctx context.Context) error {
-				_ = install(ctx, p, name)
+				if err := install(ctx, p, name); err != nil {
+					warnOptionalInstall(label, err)
+				}
 				return nil
 			},
 		})
 	}
 
 	return steps
+}
+
+// warnOptionalInstall logs a non-fatal install failure so the user can see
+// that an optional tool did not install, without failing the whole provision.
+// A clean return of nil from the step's Run lets the TUI render DoneLabel, so
+// the stderr warning is the only surfaced signal — keep it terse and visible.
+func warnOptionalInstall(tool string, err error) {
+	fmt.Fprintf(os.Stderr, "warning: %s install failed: %v\n", tool, err)
 }
 
 func (p *LimaProvider) installBun(ctx context.Context, name string) error {
