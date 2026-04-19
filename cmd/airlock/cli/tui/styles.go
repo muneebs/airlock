@@ -183,34 +183,66 @@ func LockColor(locked bool) lipgloss.Style {
 func CleanError(err error) string {
 	msg := err.Error()
 	var clean []string
+
 	for _, line := range strings.Split(msg, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "time=") {
-			if idx := strings.Index(line, "msg="); idx != -1 {
-				msg := strings.Trim(strings.TrimPrefix(line[idx:], "msg="), `"`)
-				if msg != "" {
-					clean = append(clean, msg)
-				}
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "level=") {
-			if idx := strings.Index(line, "msg="); idx != -1 {
-				msg := strings.Trim(strings.TrimPrefix(line[idx:], "msg="), `"`)
-				if msg != "" {
-					clean = append(clean, msg)
-				}
-			}
-			continue
-		}
-		if line != "" {
-			clean = append(clean, line)
+		if cleaned := cleanErrorLine(line); cleaned != "" {
+			clean = append(clean, cleaned)
 		}
 	}
+
 	if len(clean) == 0 {
 		return msg
 	}
 	return strings.Join(clean, ": ")
+}
+
+func cleanErrorLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(line, "time=") || strings.HasPrefix(line, "level=") {
+		return extractLogMessage(line)
+	}
+
+	return line
+}
+
+func extractLogMessage(line string) string {
+	idx := strings.Index(line, "msg=")
+	if idx == -1 {
+		return ""
+	}
+	rest := line[idx+len("msg="):]
+	if len(rest) == 0 {
+		return ""
+	}
+	if rest[0] == '"' {
+		// Quoted value: scan for the next unescaped quote so trailing
+		// key=value fields after the message don't bleed in.
+		escaped := false
+		for i := 1; i < len(rest); i++ {
+			c := rest[i]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				return strings.ReplaceAll(rest[1:i], `\"`, `"`)
+			}
+		}
+		// Unterminated quote — fall back to stripping the leading quote.
+		return rest[1:]
+	}
+	if j := strings.IndexAny(rest, " \t"); j != -1 {
+		return rest[:j]
+	}
+	return rest
 }
 
 func init() {

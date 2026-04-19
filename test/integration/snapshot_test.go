@@ -12,7 +12,7 @@ func TestSnapshotAndReset(t *testing.T) {
 	h := newHarness(t)
 	h.createVMFiles(t, "snap-test")
 
-	cleanDir := filepath.Join(h.limaDir, "snap-test-clean")
+	cleanDir := h.snapshotPath("snap-test")
 	if err := os.MkdirAll(cleanDir, 0755); err != nil {
 		t.Fatalf("mkdir clean dir: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestSnapshotCleanCapturesVMState(t *testing.T) {
 		t.Fatalf("SnapshotClean() error: %v", err)
 	}
 
-	cleanDir := filepath.Join(h.limaDir, "snap-capture-clean")
+	cleanDir := h.snapshotPath("snap-capture")
 	data, err := os.ReadFile(filepath.Join(cleanDir, "test.txt"))
 	if err != nil {
 		t.Fatalf("read clean test.txt: %v", err)

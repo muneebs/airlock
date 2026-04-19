@@ -146,13 +146,20 @@ func newRootCmd(stdout, stderr io.Writer, deps *Dependencies) *cobra.Command {
 
 func newSetupCmd(deps *Dependencies) *cobra.Command {
 	var nodeVersion int
+	var installNode, installBun, installDocker bool
+	var aiToolsFlag []string
 
 	cmd := &cobra.Command{
 		Use:   "setup [flags] [name]",
 		Short: "Create and provision the airlock VM",
 		Long: `Create a fresh Lima VM, install system packages and development tools,
 then take a clean snapshot for future resets. This is the first command to run
-before creating any sandboxes.`,
+before creating any sandboxes.
+
+By default, Node.js, Bun, and Docker are installed for the shared 'airlock' VM
+so any sandbox can use them. Pass --node=false / --bun=false / --docker=false
+to skip a runtime. Use --ai-tool repeatedly to install AI tools
+(claude-code, gemini, codex, opencode, ollama).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -172,6 +179,30 @@ before creating any sandboxes.`,
 			cfg, err := loadAndValidateConfig(".", deps)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
+			}
+
+			// Flag values take precedence over config values when the flag
+			// was explicitly set. For the shared 'airlock' VM, flag defaults
+			// match historical behavior (node/bun/docker on) so existing
+			// users don't lose their runtimes.
+			provisionOpts := api.ProvisionOptions{
+				NodeVersion:   nodeVersion,
+				InstallNode:   installNode,
+				InstallBun:    installBun,
+				InstallDocker: installDocker,
+				AITools:       append([]string(nil), aiToolsFlag...),
+			}
+			if !cmd.Flags().Changed("node") {
+				provisionOpts.InstallNode = cfg.Tools.Node
+			}
+			if !cmd.Flags().Changed("bun") {
+				provisionOpts.InstallBun = cfg.Tools.Bun
+			}
+			if !cmd.Flags().Changed("docker") {
+				provisionOpts.InstallDocker = cfg.Tools.Docker
+			}
+			if !cmd.Flags().Changed("ai-tool") {
+				provisionOpts.AITools = append([]string(nil), cfg.Tools.AITools...)
 			}
 
 			spec := api.SandboxSpec{
@@ -211,7 +242,7 @@ before creating any sandboxes.`,
 					},
 				},
 			}
-			for _, step := range deps.Provisioner.ProvisionSteps(name, nodeVersion) {
+			for _, step := range deps.Provisioner.ProvisionSteps(name, provisionOpts) {
 				step := step
 				phases = append(phases, tui.Phase{
 					Label:     step.Label,
@@ -244,6 +275,10 @@ before creating any sandboxes.`,
 	}
 
 	cmd.Flags().IntVar(&nodeVersion, "node-version", 22, "Node.js major version to install")
+	cmd.Flags().BoolVar(&installNode, "node", true, "Install Node.js, npm, and pnpm")
+	cmd.Flags().BoolVar(&installBun, "bun", true, "Install Bun")
+	cmd.Flags().BoolVar(&installDocker, "docker", true, "Install Docker")
+	cmd.Flags().StringSliceVar(&aiToolsFlag, "ai-tool", nil, "AI tool to install (repeatable): claude-code, gemini, codex, opencode, ollama")
 
 	return cmd
 }
@@ -862,7 +897,8 @@ Examples:
 				}
 
 				// Add provisioning steps
-				for _, step := range deps.Provisioner.ProvisionSteps(spec.Name, wizardCfg.VM.NodeVersion) {
+				provisionOpts := result.ToProvisionOptions(wizardCfg.VM.NodeVersion)
+				for _, step := range deps.Provisioner.ProvisionSteps(spec.Name, provisionOpts) {
 					step := step
 					phases = append(phases, tui.Phase{
 						Label:     step.Label,

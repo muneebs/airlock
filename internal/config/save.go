@@ -124,11 +124,17 @@ func sectionComment(section string, cfg Config) string {
 		return runtimeSectionComment(cfg.Runtime.Type)
 	case "services":
 		return servicesSectionComment()
+	case "tools":
+		return toolsSectionComment()
 	case "mounts":
 		return mountsSectionComment()
 	default:
 		return ""
 	}
+}
+
+func toolsSectionComment() string {
+	return "# Tools\n# Runtimes and AI tools to install during provisioning.\n# All optional — set to true or add to ai_tools to enable."
 }
 
 func securitySectionComment(profile string) string {

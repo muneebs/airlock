@@ -185,6 +185,53 @@ func IsInsecureNetwork(level NetworkLevel) bool {
 	return level == NetworkOngoing
 }
 
+// Runtime keys match ProvisionOptions booleans and ToolsConfig fields.
+const (
+	RuntimeNode   = "node"
+	RuntimeBun    = "bun"
+	RuntimeDocker = "docker"
+)
+
+// AI tool short-name keys. These must match the strings accepted by
+// api.ProvisionOptions.AITools and lima provisioner's aiToolStep switch.
+const (
+	AIToolClaudeCode = "claude-code"
+	AIToolGemini     = "gemini"
+	AIToolCodex      = "codex"
+	AIToolOpenCode   = "opencode"
+	AIToolOllama     = "ollama"
+)
+
+// AIToolInfo describes an AI tool option shown in the wizard.
+type AIToolInfo struct {
+	Key        string
+	Label      string // shown in multi-select
+	ShortLabel string // shown in summary
+}
+
+// AIToolRequiresNpm reports whether an AI tool key is installed via npm and
+// therefore implies Node.js must be installed. Must stay in sync with the
+// provisioner registry in internal/vm/lima.
+func AIToolRequiresNpm(key string) bool {
+	switch key {
+	case AIToolClaudeCode, AIToolGemini, AIToolCodex:
+		return true
+	}
+	return false
+}
+
+// AITools returns all AI tool options the wizard offers. Declared once here
+// so the wizard UI and tests share the same source of truth.
+func AITools() []AIToolInfo {
+	return []AIToolInfo{
+		{Key: AIToolClaudeCode, Label: "Claude Code (Anthropic)", ShortLabel: "Claude Code"},
+		{Key: AIToolGemini, Label: "Gemini CLI (Google)", ShortLabel: "Gemini CLI"},
+		{Key: AIToolCodex, Label: "Codex CLI (OpenAI)", ShortLabel: "Codex CLI"},
+		{Key: AIToolOpenCode, Label: "OpenCode", ShortLabel: "OpenCode"},
+		{Key: AIToolOllama, Label: "Ollama (local LLM runtime)", ShortLabel: "Ollama"},
+	}
+}
+
 // WizardResult contains the final configuration from the wizard.
 type WizardResult struct {
 	Source        string
@@ -192,9 +239,25 @@ type WizardResult struct {
 	TrustLevel    TrustLevel
 	ResourceLevel ResourceLevel
 	NetworkLevel  NetworkLevel
+	InstallNode   bool
+	InstallBun    bool
+	InstallDocker bool
+	AITools       []string
 	StartAtLogin  bool
 	SaveConfig    bool
 	CreateNow     bool
+}
+
+// ToProvisionOptions converts the wizard tool selections into the
+// api.ProvisionOptions the Provisioner consumes.
+func (r *WizardResult) ToProvisionOptions(nodeVersion int) api.ProvisionOptions {
+	return api.ProvisionOptions{
+		NodeVersion:   nodeVersion,
+		InstallNode:   r.InstallNode,
+		InstallBun:    r.InstallBun,
+		InstallDocker: r.InstallDocker,
+		AITools:       append([]string(nil), r.AITools...),
+	}
 }
 
 // ToSandboxSpec converts wizard result to API sandbox spec.
@@ -231,6 +294,12 @@ func (r *WizardResult) ToConfig(runtime string) config.Config {
 	cfg.Security.Profile = profile
 	cfg.Runtime.Type = runtime
 	cfg.StartAtLogin = r.StartAtLogin
+	cfg.Tools = config.ToolsConfig{
+		Node:    r.InstallNode,
+		Bun:     r.InstallBun,
+		Docker:  r.InstallDocker,
+		AITools: append([]string(nil), r.AITools...),
+	}
 	return cfg
 }
 
