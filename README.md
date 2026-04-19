@@ -60,6 +60,7 @@ airlock destroy my-project
 | Command | Description |
 |---------|-------------|
 | `airlock setup [name]` | Create and provision a VM, then take a clean snapshot |
+| `airlock init [path-or-url]` | Interactive wizard that walks you through sandbox creation |
 | `airlock sandbox <path-or-url>` | Create an isolated sandbox |
 | `airlock run <name> <command...>` | Run a command inside a sandbox |
 | `airlock shell [name]` | Open an interactive shell inside the VM |
@@ -92,6 +93,18 @@ airlock sandbox ./my-project \
 Runtime auto-detection checks for: `package.json` (node), `go.mod` (go), `Cargo.toml` (rust), `.python-version` / `requirements.txt` (python), `Dockerfile` (docker), `compose.yml` / `compose.yaml` (compose), `Makefile` (make), `*.sln` / `*.csproj` (dotnet).
 
 GitHub URL formats: `gh:user/repo` or `https://github.com/user/repo` — the repo name becomes the sandbox name.
+
+### Interactive wizard
+
+If you'd rather not remember flags, `airlock init` walks you through the common choices:
+
+```bash
+airlock init              # new sandbox in the current directory
+airlock init ./my-project
+airlock init gh:user/repo
+```
+
+The wizard prompts for name, trust level, resource size, mounts, **development runtimes** (Node.js, Bun, Docker) and **AI tools** (claude-code, gemini, codex, opencode, ollama), then offers to save the answers to `airlock.toml` so future runs are zero-prompt.
 
 ## Security profiles
 
@@ -130,6 +143,12 @@ docker = false
 
 [services]
 compose = "./docker-compose.yml"   # Docker Compose file to start automatically
+
+[tools]
+node = true                         # install Node.js + npm + pnpm
+bun = false                         # install Bun
+docker = false                      # install Docker
+ai_tools = ["claude-code"]          # claude-code, gemini, codex, opencode, ollama
 
 [[mounts]]
 path = "./api"              # required: path relative to config file
@@ -178,6 +197,10 @@ mounts:
 | `mounts[]` | `path` | string | — | Required. Relative path to mount |
 | `mounts[]` | `writable` | bool | `true` | Whether mount is writable in VM |
 | `mounts[]` | `inotify` | bool | `false` | Enable inotify file-watch events |
+| `tools` | `node` | bool | `false` | Install Node.js (npm + pnpm) in the sandbox |
+| `tools` | `bun` | bool | `false` | Install Bun |
+| `tools` | `docker` | bool | `false` | Install Docker |
+| `tools` | `ai_tools` | []string | `[]` | AI CLIs to install: `claude-code`, `gemini`, `codex`, `opencode`, `ollama` |
 
 ## Network control
 
