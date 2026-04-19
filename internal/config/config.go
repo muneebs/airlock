@@ -96,9 +96,10 @@ func Defaults() Config {
 			Profile: "cautious",
 		},
 		Tools: ToolsConfig{
-			Node:   true,
-			Bun:    true,
-			Docker: true,
+			Node:    false,
+			Bun:     false,
+			Docker:  false,
+			AITools: nil,
 		},
 		Mounts: nil,
 	}
@@ -182,6 +183,20 @@ func mergeWithDefaults(cfg Config) Config {
 	}
 	if cfg.Security.Profile == "" {
 		cfg.Security.Profile = defaults.Security.Profile
+	}
+
+	// Merge Tools fields: copy defaults for false/empty fields
+	if !cfg.Tools.Node {
+		cfg.Tools.Node = defaults.Tools.Node
+	}
+	if !cfg.Tools.Bun {
+		cfg.Tools.Bun = defaults.Tools.Bun
+	}
+	if !cfg.Tools.Docker {
+		cfg.Tools.Docker = defaults.Tools.Docker
+	}
+	if cfg.Tools.AITools == nil {
+		cfg.Tools.AITools = defaults.Tools.AITools
 	}
 
 	for i := range cfg.Mounts {

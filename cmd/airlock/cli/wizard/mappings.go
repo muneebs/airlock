@@ -249,14 +249,25 @@ type WizardResult struct {
 }
 
 // ToProvisionOptions converts the wizard tool selections into the
-// api.ProvisionOptions the Provisioner consumes.
+// api.ProvisionOptions the Provisioner consumes. AI tools are deduplicated
+// preserving first-seen order.
 func (r *WizardResult) ToProvisionOptions(nodeVersion int) api.ProvisionOptions {
+	// Deduplicate AI tools preserving first-seen order
+	seen := make(map[string]bool)
+	uniqueAITools := make([]string, 0, len(r.AITools))
+	for _, tool := range r.AITools {
+		if !seen[tool] {
+			seen[tool] = true
+			uniqueAITools = append(uniqueAITools, tool)
+		}
+	}
+
 	return api.ProvisionOptions{
 		NodeVersion:   nodeVersion,
 		InstallNode:   r.InstallNode,
 		InstallBun:    r.InstallBun,
 		InstallDocker: r.InstallDocker,
-		AITools:       append([]string(nil), r.AITools...),
+		AITools:       uniqueAITools,
 	}
 }
 
