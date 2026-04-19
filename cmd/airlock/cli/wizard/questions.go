@@ -47,6 +47,20 @@ func DeriveSandboxName(source string) string {
 		}
 	}
 
+	// Resolve bare-dot / empty / trailing-slash sources to the current
+	// working directory's basename so the default matches what the user sees
+	// in their shell prompt, not the literal ".".
+	trimmed := strings.TrimRight(source, "/")
+	if source == "" || trimmed == "" || trimmed == "." {
+		if cwd, err := os.Getwd(); err == nil {
+			base := filepath.Base(cwd)
+			if base != "" && base != "." && base != "/" {
+				return sanitizeName(base)
+			}
+		}
+		return "sandbox"
+	}
+
 	// Handle local paths
 	base := filepath.Base(source)
 	base = strings.TrimSuffix(base, filepath.Ext(base))
@@ -234,7 +248,61 @@ func Run(source string) (*WizardResult, error) {
 		}
 	}
 
-	// Step 6: Persistence options
+	// Step 6a: Development runtimes (optional — only install what you need)
+	runtimes := []string{}
+	runtimeForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Which development runtimes should we install?").
+				Description("Pick only what this sandbox needs. Space to toggle, enter to confirm.").
+				Options(
+					huh.NewOption("Node.js (npm + pnpm)", RuntimeNode),
+					huh.NewOption("Bun", RuntimeBun),
+					huh.NewOption("Docker", RuntimeDocker),
+				).
+				Value(&runtimes),
+		),
+	)
+
+	if err := runtimeForm.Run(); err != nil {
+		return nil, err
+	}
+
+	result.InstallNode = containsString(runtimes, RuntimeNode)
+	result.InstallBun = containsString(runtimes, RuntimeBun)
+	result.InstallDocker = containsString(runtimes, RuntimeDocker)
+
+	// Step 6b: AI tools
+	aiTools := []string{}
+	aiToolOptions := []huh.Option[string]{}
+	for _, info := range AITools() {
+		aiToolOptions = append(aiToolOptions, huh.NewOption(info.Label, info.Key))
+	}
+	aiToolForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Install AI coding tools?").
+				Description("npm-based tools (Claude Code, Gemini, Codex) will auto-enable Node.js.").
+				Options(aiToolOptions...).
+				Value(&aiTools),
+		),
+	)
+
+	if err := aiToolForm.Run(); err != nil {
+		return nil, err
+	}
+
+	result.AITools = aiTools
+	// npm-delivered AI tools imply Node.js; reflect that in the result so
+	// the summary screen and saved config match what provisioning will do.
+	for _, t := range aiTools {
+		if AIToolRequiresNpm(t) {
+			result.InstallNode = true
+			break
+		}
+	}
+
+	// Step 7: Persistence options
 	startAtLogin := false // Default
 	saveConfig := true    // Default
 
@@ -259,7 +327,7 @@ func Run(source string) (*WizardResult, error) {
 	result.StartAtLogin = startAtLogin
 	result.SaveConfig = saveConfig
 
-	// Step 7: Confirmation
+	// Step 8: Confirmation
 	cpu, memory := MapResourceLevel(result.ResourceLevel)
 	profileName := MapTrustLevelToProfile(result.TrustLevel)
 	defaults := config.Defaults()
@@ -272,6 +340,8 @@ func Run(source string) (*WizardResult, error) {
 	fmt.Printf("  Security:    %s\n", profileName)
 	fmt.Printf("  Resources:   %d CPU, %s RAM, %s disk\n", cpu, memory, defaults.VM.Disk)
 	fmt.Printf("  Network:     %s\n", getNetworkDescription(result.NetworkLevel))
+	fmt.Printf("  Runtimes:    %s\n", summarizeRuntimes(result))
+	fmt.Printf("  AI tools:    %s\n", summarizeAITools(result.AITools))
 	fmt.Printf("  Auto-start:  %s\n", boolToYesNo(result.StartAtLogin))
 	fmt.Printf("  Config:      %s\n", boolToYesNo(result.SaveConfig)+" (airlock.toml)")
 	fmt.Println(strings.Repeat("─", 50))
@@ -352,6 +422,56 @@ func boolToYesNo(b bool) string {
 		return "Yes"
 	}
 	return "No"
+}
+
+// containsString reports whether slice contains target.
+func containsString(slice []string, target string) bool {
+	for _, s := range slice {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
+// summarizeRuntimes renders the user's runtime picks for the confirmation
+// screen. Returns "none" if nothing is selected.
+func summarizeRuntimes(r WizardResult) string {
+	var parts []string
+	if r.InstallNode {
+		parts = append(parts, "Node.js")
+	}
+	if r.InstallBun {
+		parts = append(parts, "Bun")
+	}
+	if r.InstallDocker {
+		parts = append(parts, "Docker")
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
+// summarizeAITools renders the AI tool list for the confirmation screen.
+// Returns "none" if no tools are selected.
+func summarizeAITools(keys []string) string {
+	if len(keys) == 0 {
+		return "none"
+	}
+	labels := make([]string, 0, len(keys))
+	infoByKey := map[string]AIToolInfo{}
+	for _, info := range AITools() {
+		infoByKey[info.Key] = info
+	}
+	for _, k := range keys {
+		if info, ok := infoByKey[k]; ok {
+			labels = append(labels, info.ShortLabel)
+		} else {
+			labels = append(labels, k)
+		}
+	}
+	return strings.Join(labels, ", ")
 }
 
 // IsTTY returns true if stdout is a terminal.

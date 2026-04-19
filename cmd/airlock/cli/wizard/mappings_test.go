@@ -192,6 +192,82 @@ func TestResourceLevels(t *testing.T) {
 	}
 }
 
+func TestAITools_Keys(t *testing.T) {
+	tools := AITools()
+	want := map[string]bool{
+		AIToolClaudeCode: false,
+		AIToolGemini:     false,
+		AIToolCodex:      false,
+		AIToolOpenCode:   false,
+		AIToolOllama:     false,
+	}
+	for _, info := range tools {
+		if info.Key == "" {
+			t.Errorf("AITools() entry has empty Key: %+v", info)
+		}
+		if info.Label == "" {
+			t.Errorf("AITools() entry has empty Label: %+v", info)
+		}
+		if _, ok := want[info.Key]; !ok {
+			t.Errorf("AITools() returned unexpected key %q", info.Key)
+			continue
+		}
+		want[info.Key] = true
+	}
+	for k, found := range want {
+		if !found {
+			t.Errorf("AITools() missing expected key %q", k)
+		}
+	}
+}
+
+func TestWizardResult_ToProvisionOptions(t *testing.T) {
+	r := WizardResult{
+		InstallNode:   true,
+		InstallBun:    false,
+		InstallDocker: true,
+		AITools:       []string{AIToolClaudeCode, AIToolOllama},
+	}
+
+	opts := r.ToProvisionOptions(20)
+
+	if opts.NodeVersion != 20 {
+		t.Errorf("NodeVersion = %d, want 20", opts.NodeVersion)
+	}
+	if !opts.InstallNode || opts.InstallBun || !opts.InstallDocker {
+		t.Errorf("runtime flags = %+v, want node=true bun=false docker=true", opts)
+	}
+	if len(opts.AITools) != 2 || opts.AITools[0] != AIToolClaudeCode || opts.AITools[1] != AIToolOllama {
+		t.Errorf("AITools = %v, want [claude-code ollama]", opts.AITools)
+	}
+
+	// Mutating the returned slice must not alias the caller's slice.
+	opts.AITools[0] = "tampered"
+	if r.AITools[0] != AIToolClaudeCode {
+		t.Errorf("ToProvisionOptions aliased AITools slice")
+	}
+}
+
+func TestWizardResult_ToConfig_Tools(t *testing.T) {
+	r := WizardResult{
+		TrustLevel:    TrustCautious,
+		ResourceLevel: ResourceStandard,
+		InstallNode:   true,
+		InstallBun:    true,
+		InstallDocker: false,
+		AITools:       []string{AIToolGemini},
+	}
+
+	cfg := r.ToConfig("node")
+
+	if !cfg.Tools.Node || !cfg.Tools.Bun || cfg.Tools.Docker {
+		t.Errorf("Tools runtime flags wrong: %+v", cfg.Tools)
+	}
+	if len(cfg.Tools.AITools) != 1 || cfg.Tools.AITools[0] != AIToolGemini {
+		t.Errorf("Tools.AITools = %v, want [gemini]", cfg.Tools.AITools)
+	}
+}
+
 func TestNetworkLevels(t *testing.T) {
 	levels := NetworkLevels()
 	if len(levels) != 3 {

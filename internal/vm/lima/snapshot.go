@@ -43,25 +43,48 @@ func safeFilePerm(m fs.FileMode) fs.FileMode {
 	return m.Perm() & 0755
 }
 
-// SnapshotClean copies the VM's Lima directory to a -clean baseline,
-// excluding runtime files like sockets. This allows airlock reset to
-// restore the VM to a clean state without re-provisioning.
+// cleanSnapshotPath returns the current snapshot path for a VM.
+// Snapshots live outside limaDir so Lima does not list them as VMs.
+func (p *LimaProvider) cleanSnapshotPath(name string) string {
+	return filepath.Join(p.snapshotDir, name)
+}
+
+// legacyCleanSnapshotPath returns the pre-migration snapshot path
+// (<limaDir>/<name>-clean). Still read by RestoreClean/HasCleanSnapshot so
+// users with existing snapshots don't have to re-run setup.
+func (p *LimaProvider) legacyCleanSnapshotPath(name string) string {
+	return filepath.Join(p.limaDir, name+"-clean")
+}
+
+// SnapshotClean copies the VM's Lima directory to a clean baseline stored
+// outside Lima's state dir (so Lima does not list the snapshot as a second VM).
+// Runtime files like sockets are excluded. Any legacy in-Lima snapshot for the
+// same VM is deleted so `limactl list` stops surfacing it.
 func (p *LimaProvider) SnapshotClean(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
 	vmDir := filepath.Join(p.limaDir, name)
-	cleanDir := filepath.Join(p.limaDir, name+"-clean")
+	cleanDir := p.cleanSnapshotPath(name)
 
 	if _, err := os.Stat(vmDir); err != nil {
 		return fmt.Errorf("vm dir %s not found: %w", vmDir, err)
 	}
 
-	if err := os.RemoveAll(cleanDir); err != nil {
-		return fmt.Errorf("remove old clean dir: %w", err)
+	if err := os.MkdirAll(filepath.Dir(cleanDir), 0755); err != nil {
+		return fmt.Errorf("create snapshot dir: %w", err)
 	}
+	// Write into a sibling tmp dir and swap on success so a mid-walk failure
+	// does not destroy the previous snapshot.
+	tmpDir := cleanDir + ".tmp"
+	if err := os.RemoveAll(tmpDir); err != nil {
+		return fmt.Errorf("remove stale tmp dir: %w", err)
+	}
+	// Legacy snapshot (inside limaDir) is removed on success only: if the
+	// new snapshot below fails we'd rather keep the old one as fallback.
+	legacyDir := p.legacyCleanSnapshotPath(name)
 
-	return filepath.WalkDir(vmDir, func(path string, d fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(vmDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -79,7 +102,7 @@ func (p *LimaProvider) SnapshotClean(ctx context.Context, name string) error {
 			return nil
 		}
 
-		targetPath := filepath.Join(cleanDir, relPath)
+		targetPath := filepath.Join(tmpDir, relPath)
 
 		if d.IsDir() {
 			info, err := d.Info()
@@ -99,20 +122,52 @@ func (p *LimaProvider) SnapshotClean(ctx context.Context, name string) error {
 		}
 
 		return copyFileStreaming(path, targetPath, safeFilePerm(info.Mode()))
-	})
+	}); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return err
+	}
+
+	// Swap: remove old snapshot only after the new one is fully written.
+	// os.Rename over an existing directory fails on Linux/macOS, so clear
+	// the target first. Failure between these two lines is the narrow window
+	// where a snapshot can be lost; acceptable since tmpDir stays on disk
+	// for manual recovery.
+	if err := os.RemoveAll(cleanDir); err != nil {
+		return fmt.Errorf("remove old clean dir: %w", err)
+	}
+	if err := os.Rename(tmpDir, cleanDir); err != nil {
+		return fmt.Errorf("promote snapshot: %w", err)
+	}
+
+	if _, err := os.Stat(legacyDir); err == nil {
+		if err := os.RemoveAll(legacyDir); err != nil {
+			return fmt.Errorf("remove legacy clean dir: %w", err)
+		}
+	}
+	return nil
 }
 
-// RestoreClean copies the -clean baseline back over the VM directory,
+// RestoreClean copies the clean baseline back over the VM directory,
 // restoring it to a freshly-provisioned state. The VM must be stopped.
+// Falls back to the legacy in-Lima snapshot location if the new one is absent
+// (so users with pre-migration snapshots don't break on reset).
 func (p *LimaProvider) RestoreClean(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("invalid vm name: %w", err)
 	}
-	cleanDir := filepath.Join(p.limaDir, name+"-clean")
 	vmDir := filepath.Join(p.limaDir, name)
 
+	cleanDir := p.cleanSnapshotPath(name)
 	if _, err := os.Stat(cleanDir); err != nil {
-		return fmt.Errorf("clean baseline %s not found: %w", cleanDir, err)
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat clean baseline: %w", err)
+		}
+		// Fall back to legacy path.
+		legacy := p.legacyCleanSnapshotPath(name)
+		if _, lerr := os.Stat(legacy); lerr != nil {
+			return fmt.Errorf("clean baseline not found (checked %s and %s)", cleanDir, legacy)
+		}
+		cleanDir = legacy
 	}
 
 	if err := os.RemoveAll(vmDir); err != nil {
@@ -122,111 +177,20 @@ func (p *LimaProvider) RestoreClean(ctx context.Context, name string) error {
 	return copyDir(cleanDir, vmDir)
 }
 
-// HasCleanSnapshot checks whether a -clean baseline exists for the VM.
+// HasCleanSnapshot reports whether a clean baseline exists for the VM at
+// either the current or legacy location.
 func (p *LimaProvider) HasCleanSnapshot(ctx context.Context, name string) (bool, error) {
 	if err := validateName(name); err != nil {
 		return false, fmt.Errorf("invalid vm name: %w", err)
 	}
-	cleanDir := filepath.Join(p.limaDir, name+"-clean")
-	if _, err := os.Stat(cleanDir); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("stat clean snapshot dir: %w", err)
-	}
-	return true, nil
-}
-
-// ProvisionVM runs the standard provision commands for a fresh VM.
-// This installs Node.js, pnpm, bun, Docker, and creates the airlock user.
-func (p *LimaProvider) ProvisionVM(ctx context.Context, name string, nodeVersion int) error {
-	for _, step := range p.ProvisionSteps(name, nodeVersion) {
-		if err := step.Run(ctx); err != nil {
-			return err
+	for _, dir := range []string{p.cleanSnapshotPath(name), p.legacyCleanSnapshotPath(name)} {
+		if _, err := os.Stat(dir); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, fmt.Errorf("stat clean snapshot dir: %w", err)
 		}
 	}
-	return nil
-}
-
-// ProvisionSteps returns the provisioning sequence as discrete, named steps
-// so callers can render per-step progress. Failing required steps propagate
-// their error; non-fatal steps (Bun, Docker) swallow errors to match the
-// previous ProvisionVM behavior.
-func (p *LimaProvider) ProvisionSteps(name string, nodeVersion int) []api.ProvisionStep {
-	if nodeVersion <= 0 {
-		nodeVersion = 22
-	}
-
-	required := []struct {
-		label string
-		desc  string
-		cmd   []string
-	}{
-		{"Installing system packages", "system packages", []string{"sudo", "bash", "-c", "export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y curl jq iptables unzip git"}},
-		{fmt.Sprintf("Installing Node.js %d", nodeVersion), "node.js", []string{"sudo", "bash", "-c", fmt.Sprintf("curl -fsSL https://deb.nodesource.com/setup_%d.x | bash - && apt-get install -y nodejs", nodeVersion)}},
-		{"Installing pnpm", "pnpm", []string{"sudo", "npm", "install", "-g", "pnpm"}},
-		{"Creating airlock user", "create airlock user", []string{"sudo", "bash", "-c", "id airlock &>/dev/null || useradd -m -s /bin/bash airlock"}},
-		// chown must be -xdev so it does not descend into virtiofs mounts
-		// (e.g. /home/airlock/projects/<name>) where chown returns EPERM.
-		// chown must skip virtiofs mount points under /home/airlock/projects/*
-		// (EPERM across fs boundary). -xdev alone still visits the mountpoint
-		// entry itself, so prune /home/airlock/projects explicitly and chown
-		// only that directory (not its contents).
-		{"Preparing airlock home", "setup airlock dirs", []string{"sudo", "bash", "-c", "mkdir -p /home/airlock/.npm-global /home/airlock/projects && find /home/airlock -xdev -path /home/airlock/projects -prune -o -print0 | xargs -0 chown airlock:airlock && chown airlock:airlock /home/airlock/projects"}},
-		{"Configuring npm prefix", "npm prefix", []string{"sudo", "-u", "airlock", "bash", "--login", "-c", "npm config set prefix /home/airlock/.npm-global"}},
-	}
-
-	steps := make([]api.ProvisionStep, 0, len(required)+2)
-	for _, r := range required {
-		r := r
-		steps = append(steps, api.ProvisionStep{
-			Label: r.label,
-			Run: func(ctx context.Context) error {
-				if err := validateName(name); err != nil {
-					return fmt.Errorf("invalid vm name: %w", err)
-				}
-				if _, err := p.Exec(ctx, name, r.cmd); err != nil {
-					return fmt.Errorf("provision %s: %w", r.desc, err)
-				}
-				return nil
-			},
-		})
-	}
-
-	steps = append(steps,
-		api.ProvisionStep{
-			Label: "Installing Bun",
-			Run: func(ctx context.Context) error {
-				_ = p.installBun(ctx, name)
-				return nil
-			},
-		},
-		api.ProvisionStep{
-			Label: "Installing Docker",
-			Run: func(ctx context.Context) error {
-				_ = p.installDocker(ctx, name)
-				return nil
-			},
-		},
-	)
-
-	return steps
-}
-
-func (p *LimaProvider) installBun(ctx context.Context, name string) error {
-	_, err := p.Exec(ctx, name, []string{
-		"sudo", "bash", "-c",
-		"export HOME=/root && curl -fsSL https://bun.sh/install | bash && cp /root/.bun/bin/bun /usr/local/bin/bun && chmod +x /usr/local/bin/bun",
-	})
-	return err
-}
-
-func (p *LimaProvider) installDocker(ctx context.Context, name string) error {
-	if _, err := p.Exec(ctx, name, []string{"sudo", "bash", "-c", "curl -fsSL https://get.docker.com | bash"}); err != nil {
-		return err
-	}
-	_, err := p.Exec(ctx, name, []string{"sudo", "usermod", "-aG", "docker", "airlock"})
-	return err
+	return false, nil
 }
 
 func copyDir(src, dst string) error {

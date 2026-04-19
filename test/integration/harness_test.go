@@ -106,7 +106,7 @@ exit 0
 		t.Fatalf("write fake limactl: %v", err)
 	}
 
-	provider := lima.NewLimaProviderWithPaths(fakeLimactl, limaDir)
+	provider := lima.NewLimaProviderWithPaths(fakeLimactl, limaDir, "")
 
 	detector := detect.NewCompositeDetector()
 	profiles := profile.NewRegistry()
@@ -182,6 +182,13 @@ func (h *harness) resetCalls() {
 
 func (h *harness) ctx() context.Context {
 	return context.Background()
+}
+
+// snapshotPath returns the clean-snapshot directory the harness's provider
+// writes to. Tests MUST use this instead of concatenating suffixes inline so
+// the construction lives in one place and matches the provider's default.
+func (h *harness) snapshotPath(name string) string {
+	return filepath.Join(h.limaDir+"-snapshots", name)
 }
 
 func (h *harness) createVMFiles(t *testing.T, name string) {

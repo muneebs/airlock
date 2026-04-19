@@ -26,10 +26,33 @@ type Provider interface {
 // This is a separate interface from Provider following the Interface Segregation
 // Principle — not every Provider can provision VMs or take snapshots.
 type Provisioner interface {
-	ProvisionVM(ctx context.Context, name string, nodeVersion int) error
-	ProvisionSteps(name string, nodeVersion int) []ProvisionStep
+	ProvisionVM(ctx context.Context, name string, opts ProvisionOptions) error
+	ProvisionSteps(name string, opts ProvisionOptions) []ProvisionStep
 	SnapshotClean(ctx context.Context, name string) error
 	HasCleanSnapshot(ctx context.Context, name string) (bool, error)
+}
+
+// ProvisionOptions controls which runtimes and AI tools are installed during
+// provisioning. An empty options value installs only the required baseline
+// (system packages, airlock user). Callers opt into each runtime explicitly.
+type ProvisionOptions struct {
+	// NodeVersion is the Node.js major version to install when InstallNode
+	// is true (or when any AI tool requires npm). Zero means default (22).
+	NodeVersion int
+
+	// InstallNode installs Node.js, npm, and pnpm.
+	InstallNode bool
+
+	// InstallBun installs the Bun runtime.
+	InstallBun bool
+
+	// InstallDocker installs Docker.
+	InstallDocker bool
+
+	// AITools lists AI tools to install by short name. Supported values:
+	// "claude-code", "gemini", "opencode", "codex", "ollama". Unknown
+	// names are ignored. npm-based tools auto-require Node.
+	AITools []string
 }
 
 // ProvisionStep is a named unit of work in the provisioning sequence.

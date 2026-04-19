@@ -224,7 +224,7 @@ func TestLimaProviderCreate(t *testing.T) {
 	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\necho 'created'\n"
 	os.WriteFile(limactlPath, []byte(script), 0755)
 
-	p := NewLimaProviderWithPaths(limactlPath, dir)
+	p := NewLimaProviderWithPaths(limactlPath, dir, "")
 	spec := api.VMSpec{
 		Name:   "test-sandbox",
 		CPU:    2,
@@ -253,7 +253,7 @@ func TestLimaProviderExec(t *testing.T) {
 	script := "#!/bin/sh\nshift 2; shift; echo \"$@\"\n"
 	os.WriteFile(limactlPath, []byte(script), 0755)
 
-	p := NewLimaProviderWithPaths(limactlPath, dir)
+	p := NewLimaProviderWithPaths(limactlPath, dir, "")
 	output, err := p.Exec(context.Background(), "test-vm", []string{"echo", "hello"})
 	if err != nil {
 		t.Fatalf("Exec() error: %v", err)
@@ -272,7 +272,7 @@ func TestLimaProviderExecAsUserArgPreservation(t *testing.T) {
 	script := "#!/bin/sh\necho \"$@\" > " + cmdFile + "\n"
 	os.WriteFile(limactlPath, []byte(script), 0755)
 
-	p := NewLimaProviderWithPaths(limactlPath, dir)
+	p := NewLimaProviderWithPaths(limactlPath, dir, "")
 	_, err := p.ExecAsUser(context.Background(), "test-vm", "airlock", []string{"echo", "hello world", "arg3"})
 	if err != nil {
 		t.Fatalf("ExecAsUser() error: %v", err)
@@ -341,7 +341,7 @@ echo "unknown command: $1" >&2; exit 1
 `
 	os.WriteFile(limactlPath, []byte(script), 0755)
 
-	p := NewLimaProviderWithPaths(limactlPath, dir)
+	p := NewLimaProviderWithPaths(limactlPath, dir, "")
 
 	exists, err := p.Exists(context.Background(), "existing-vm")
 	if err != nil {
@@ -373,7 +373,7 @@ fi
 `
 	os.WriteFile(limactlPath, []byte(script), 0755)
 
-	p := NewLimaProviderWithPaths(limactlPath, dir)
+	p := NewLimaProviderWithPaths(limactlPath, dir, "")
 
 	running, err := p.IsRunning(context.Background(), "running-vm")
 	if err != nil {
@@ -400,7 +400,7 @@ func TestLimaProviderCopyToVM(t *testing.T) {
 	script := "#!/bin/sh\necho \"$@\" > " + filepath.Join(dir, "args") + "\n"
 	os.WriteFile(limactlPath, []byte(script), 0755)
 
-	p := NewLimaProviderWithPaths(limactlPath, dir)
+	p := NewLimaProviderWithPaths(limactlPath, dir, "")
 	err := p.CopyToVM(context.Background(), "test-vm", "/src/file.txt", "/dst/file.txt")
 	if err != nil {
 		t.Fatalf("CopyToVM() error: %v", err)

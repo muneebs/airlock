@@ -16,10 +16,15 @@ import (
 type LimaProvider struct {
 	limactlPath string
 	limaDir     string
+	// snapshotDir holds the clean-baseline copies used by airlock reset.
+	// It must live OUTSIDE limaDir so Lima does not pick it up as an extra
+	// VM entry in `limactl list`.
+	snapshotDir string
 }
 
-// NewLimaProvider creates a provider using the default limactl binary
-// and Lima state directory ($HOME/.lima).
+// NewLimaProvider creates a provider using the default limactl binary,
+// the default Lima state directory ($HOME/.lima), and an airlock-owned
+// snapshot directory ($HOME/.airlock/snapshots).
 func NewLimaProvider() (*LimaProvider, error) {
 	path, err := exec.LookPath("limactl")
 	if err != nil {
@@ -32,14 +37,21 @@ func NewLimaProvider() (*LimaProvider, error) {
 	return &LimaProvider{
 		limactlPath: path,
 		limaDir:     filepath.Join(home, ".lima"),
+		snapshotDir: filepath.Join(home, ".airlock", "snapshots"),
 	}, nil
 }
 
 // NewLimaProviderWithPaths creates a provider with explicit paths, for testing.
-func NewLimaProviderWithPaths(limactlPath, limaDir string) *LimaProvider {
+// If snapshotDir is empty, it defaults to limaDir + "-snapshots" so tests that
+// don't care about snapshot location still get a valid, isolated path.
+func NewLimaProviderWithPaths(limactlPath, limaDir, snapshotDir string) *LimaProvider {
+	if snapshotDir == "" {
+		snapshotDir = limaDir + "-snapshots"
+	}
 	return &LimaProvider{
 		limactlPath: limactlPath,
 		limaDir:     limaDir,
+		snapshotDir: snapshotDir,
 	}
 }
 

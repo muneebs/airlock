@@ -21,6 +21,7 @@ type Config struct {
 	Runtime      RuntimeConfig  `json:"runtime" yaml:"runtime" toml:"runtime"`
 	Security     SecurityConfig `json:"security" yaml:"security" toml:"security"`
 	Services     ServicesConfig `json:"services" yaml:"services" toml:"services"`
+	Tools        ToolsConfig    `json:"tools" yaml:"tools" toml:"tools"`
 	Mounts       []MountConfig  `json:"mounts" yaml:"mounts" toml:"mounts"`
 	StartAtLogin bool           `json:"start_at_login,omitempty" yaml:"start_at_login,omitempty" toml:"start_at_login,omitempty"`
 }
@@ -59,6 +60,15 @@ type ServicesConfig struct {
 	Compose string `json:"compose,omitempty" yaml:"compose,omitempty" toml:"compose,omitempty"`
 }
 
+// ToolsConfig selects which runtimes and AI tools are installed during
+// provisioning. All fields default to false/empty — callers opt in.
+type ToolsConfig struct {
+	Node    bool     `json:"node,omitempty" yaml:"node,omitempty" toml:"node,omitempty"`
+	Bun     bool     `json:"bun,omitempty" yaml:"bun,omitempty" toml:"bun,omitempty"`
+	Docker  bool     `json:"docker,omitempty" yaml:"docker,omitempty" toml:"docker,omitempty"`
+	AITools []string `json:"ai_tools,omitempty" yaml:"ai_tools,omitempty" toml:"ai_tools,omitempty"`
+}
+
 // MountConfig defines an additional host directory to mount.
 type MountConfig struct {
 	Path     string `json:"path" yaml:"path" toml:"path"`
@@ -84,6 +94,12 @@ func Defaults() Config {
 		},
 		Security: SecurityConfig{
 			Profile: "cautious",
+		},
+		Tools: ToolsConfig{
+			Node:    false,
+			Bun:     false,
+			Docker:  false,
+			AITools: nil,
 		},
 		Mounts: nil,
 	}
@@ -167,6 +183,20 @@ func mergeWithDefaults(cfg Config) Config {
 	}
 	if cfg.Security.Profile == "" {
 		cfg.Security.Profile = defaults.Security.Profile
+	}
+
+	// Merge Tools fields: copy defaults for false/empty fields
+	if !cfg.Tools.Node {
+		cfg.Tools.Node = defaults.Tools.Node
+	}
+	if !cfg.Tools.Bun {
+		cfg.Tools.Bun = defaults.Tools.Bun
+	}
+	if !cfg.Tools.Docker {
+		cfg.Tools.Docker = defaults.Tools.Docker
+	}
+	if cfg.Tools.AITools == nil {
+		cfg.Tools.AITools = defaults.Tools.AITools
 	}
 
 	for i := range cfg.Mounts {

@@ -450,6 +450,38 @@ func TestRoundTripTOML(t *testing.T) {
 	}
 }
 
+func TestRoundTripTOML_Tools(t *testing.T) {
+	original := Defaults()
+	original.Tools = ToolsConfig{
+		Node:    true,
+		Bun:     false,
+		Docker:  true,
+		AITools: []string{"claude-code", "ollama"},
+	}
+
+	data, err := WriteTOML(original)
+	if err != nil {
+		t.Fatalf("WriteTOML() error: %v", err)
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "airlock.toml"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !loaded.Tools.Node || loaded.Tools.Bun || !loaded.Tools.Docker {
+		t.Errorf("Tools flags mismatch: %+v", loaded.Tools)
+	}
+	if len(loaded.Tools.AITools) != 2 || loaded.Tools.AITools[0] != "claude-code" || loaded.Tools.AITools[1] != "ollama" {
+		t.Errorf("Tools.AITools mismatch: %v", loaded.Tools.AITools)
+	}
+}
+
 func TestRoundTripYAML(t *testing.T) {
 	original := Defaults()
 	writable := false

@@ -1,6 +1,8 @@
 package wizard
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -11,7 +13,6 @@ func TestDeriveSandboxName(t *testing.T) {
 		source   string
 		expected string
 	}{
-		{"current dir", ".", "sandbox"},
 		{"simple path", "./my-project", "my-project"},
 		{"nested path", "./projects/my-app", "my-app"},
 		{"gh short", "gh:user/repo", "repo"},
@@ -19,7 +20,6 @@ func TestDeriveSandboxName(t *testing.T) {
 		{"github https", "https://github.com/user/repo", "repo"},
 		{"github https with git", "https://github.com/user/repo.git", "repo"},
 		{"path with extension", "./my-project.tar.gz", "my-project.tar"}, // Double extension behavior
-		{"empty base", "./", "sandbox"},
 	}
 
 	for _, tt := range tests {
@@ -29,6 +29,24 @@ func TestDeriveSandboxName(t *testing.T) {
 				t.Errorf("DeriveSandboxName(%q) = %q, want %q", tt.source, result, tt.expected)
 			}
 		})
+	}
+}
+
+// TestDeriveSandboxName_CurrentDir verifies "." and "./" resolve to the
+// current working directory's basename, so users running `airlock init` in
+// a real project see their project name as the default.
+func TestDeriveSandboxName_CurrentDir(t *testing.T) {
+	tmp := t.TempDir()
+	projDir := filepath.Join(tmp, "my-real-project")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Chdir(projDir)
+
+	for _, src := range []string{".", "./", ""} {
+		if got := DeriveSandboxName(src); got != "my-real-project" {
+			t.Errorf("DeriveSandboxName(%q) = %q, want %q", src, got, "my-real-project")
+		}
 	}
 }
 
