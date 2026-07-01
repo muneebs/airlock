@@ -152,6 +152,7 @@ type fakeNetworkController struct {
 	locked   []string
 	unlocked []string
 	removed  []string
+	applyErr error
 }
 
 func (f *fakeNetworkController) Lock(_ context.Context, sandboxName string) error {
@@ -165,6 +166,9 @@ func (f *fakeNetworkController) Unlock(_ context.Context, sandboxName string) er
 }
 
 func (f *fakeNetworkController) ApplyPolicy(_ context.Context, sandboxName string, policy api.NetworkPolicy) error {
+	if f.applyErr != nil {
+		return f.applyErr
+	}
 	f.policies = append(f.policies, policy)
 	return nil
 }
@@ -1217,6 +1221,49 @@ func TestRemoteCloneURL(t *testing.T) {
 		gotURL, gotOK := remoteCloneURL(c.source)
 		if gotURL != c.wantURL || gotOK != c.wantOK {
 			t.Errorf("remoteCloneURL(%q) = (%q, %v), want (%q, %v)", c.source, gotURL, gotOK, c.wantURL, c.wantOK)
+		}
+	}
+}
+
+// TestCreateRollsBackVMOnNetworkPolicyFailure verifies a booted VM is torn down
+// (not left running with open egress) when the network policy fails to apply.
+func TestCreateRollsBackVMOnNetworkPolicyFailure(t *testing.T) {
+	mgr, provider, _, _, network := newTestManager(t)
+	network.applyErr = fmt.Errorf("iptables-restore failed")
+
+	_, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name: "netfail", Profile: "cautious", CPU: intPtr(2),
+	})
+	if err == nil {
+		t.Fatal("expected Create() to fail when network policy fails")
+	}
+	if _, exists := provider.vms["netfail"]; exists {
+		t.Error("VM should be deleted when network policy fails, not left running")
+	}
+}
+
+// TestCloneRejectsUnsafeName verifies a name that could escape the project
+// directory is rejected before a clone is attempted.
+func TestCloneRejectsUnsafeName(t *testing.T) {
+	mgr, _, _, _, _ := newTestManager(t)
+	for _, bad := range []string{"..", ".", "a/b", "a\\b"} {
+		if err := mgr.cloneRemoteSource(context.Background(), bad, "gh:o/r"); err == nil {
+			t.Errorf("expected rejection of unsafe name %q", bad)
+		}
+	}
+}
+
+// TestRedactURLCredentials verifies userinfo is stripped so tokens never reach logs.
+func TestRedactURLCredentials(t *testing.T) {
+	cases := map[string]string{
+		"https://user:ghp_secret@github.com/o/r.git": "https://***@github.com/o/r.git",
+		"https://token@github.com/o/r.git":           "https://***@github.com/o/r.git",
+		"https://github.com/o/r.git":                 "https://github.com/o/r.git",
+		"git@github.com:o/r.git":                     "git@github.com:o/r.git",
+	}
+	for in, want := range cases {
+		if got := redactURLCredentials(in); got != want {
+			t.Errorf("redactURLCredentials(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
