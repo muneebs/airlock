@@ -106,6 +106,24 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 		return api.SandboxInfo{}, fmt.Errorf("start VM: %w", err)
 	}
 
+	// Remote sources are git-cloned into the VM. This must happen after the VM
+	// boots but BEFORE the network policy is applied: a locking profile
+	// (cautious/strict/agent) would otherwise block git from reaching the
+	// remote. A freshly booted VM has open egress until applyNetworkPolicy runs.
+	if isRemoteSource(spec.Source) {
+		report("cloning source")
+		if err := m.cloneRemoteSource(ctx, spec.Name, spec.Source); err != nil {
+			if delErr := m.provider.Delete(ctx, spec.Name); delErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: rollback delete VM %q: %v\n", spec.Name, delErr)
+			}
+			m.mu.Lock()
+			info.State = api.StateErrored
+			_ = m.put(info)
+			m.mu.Unlock()
+			return api.SandboxInfo{}, fmt.Errorf("clone source: %w", err)
+		}
+	}
+
 	if !opts.SkipNetworkPolicy {
 		report("applying network policy")
 		if err := m.applyNetworkPolicy(ctx, spec.Name, prof, spec.LockNetworkAfterSetup); err != nil {
@@ -117,7 +135,9 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 		}
 	}
 
-	if spec.Source != "" {
+	// Only local sources are host mounts. Remote sources live inside the VM
+	// (cloned above), so there is nothing to register.
+	if spec.Source != "" && !isRemoteSource(spec.Source) {
 		report("registering mount")
 		if err := m.mounts.Register(ctx, spec.Name, api.Mount{
 			Name:     spec.Name,
@@ -145,6 +165,23 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 
 	report("ready")
 	return *info, nil
+}
+
+// cloneRemoteSource git-clones a remote SandboxSpec.Source into the sandbox's
+// project directory as the airlock user, so the repo lands where Shell and Run
+// expect it (/home/airlock/projects/<name>). The URL is normalized and
+// validated by remoteCloneURL; git receives it as a distinct, shell-escaped
+// argument via ExecAsUser.
+func (m *Manager) cloneRemoteSource(ctx context.Context, name, source string) error {
+	url, ok := remoteCloneURL(source)
+	if !ok {
+		return fmt.Errorf("unsupported or invalid remote source %q", source)
+	}
+	dest := "/home/airlock/projects/" + name
+	if _, err := m.provider.ExecAsUser(ctx, name, "airlock", []string{"git", "clone", url, dest}); err != nil {
+		return fmt.Errorf("git clone %s: %w", url, err)
+	}
+	return nil
 }
 
 func (m *Manager) resolveRuntime(spec api.SandboxSpec) (api.RuntimeType, error) {

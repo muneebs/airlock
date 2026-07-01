@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -169,8 +171,8 @@ func resolveResources(spec api.SandboxSpec, prof api.Profile, cfgDefaults api.Sa
 // resolveMountHostPath turns a SandboxSpec.Source into an absolute host
 // path suitable for a Lima mount. Lima rejects relative paths — see
 // `mounts[0].location must be an absolute path`. Remote sources
-// (gh:..., https://...) return "" because they are cloned into the VM,
-// not mounted from the host.
+// (gh:..., https://...) return "" because they are git-cloned into the VM
+// (see Manager.cloneRemoteSource), not mounted from the host.
 func resolveMountHostPath(source string) string {
 	if source == "" || isRemoteSource(source) {
 		return ""
@@ -189,6 +191,38 @@ func isRemoteSource(source string) bool {
 		}
 	}
 	return false
+}
+
+// ghRepoRe matches the "owner/repo" portion of a gh: shorthand source.
+var ghRepoRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
+// remoteURLRe is a conservative charset for a full clone URL. It excludes
+// whitespace and shell metacharacters; even though the URL is passed to git as
+// a distinct, shell-escaped argument (never interpolated into a command
+// string), validating here rejects malformed input early with a clear error.
+var remoteURLRe = regexp.MustCompile(`^[A-Za-z0-9@:/._~+-]+$`)
+
+// remoteCloneURL turns a remote SandboxSpec.Source into a git clone URL.
+// It normalizes the gh: shorthand to an https GitHub URL and passes through
+// http(s)/git@ URLs after a charset check. The bool is false for anything it
+// does not recognize or that fails validation.
+func remoteCloneURL(source string) (string, bool) {
+	if strings.HasPrefix(source, "gh:") {
+		repo := strings.TrimPrefix(source, "gh:")
+		if !ghRepoRe.MatchString(repo) {
+			return "", false
+		}
+		return "https://github.com/" + repo + ".git", true
+	}
+	if strings.HasPrefix(source, "https://") ||
+		strings.HasPrefix(source, "http://") ||
+		strings.HasPrefix(source, "git@") {
+		if !remoteURLRe.MatchString(source) {
+			return "", false
+		}
+		return source, true
+	}
+	return "", false
 }
 
 // ErrNotFound is returned when a sandbox name does not exist.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,12 +16,13 @@ import (
 )
 
 type fakeProvider struct {
-	vms      map[string]bool
-	execOut  string
-	execErr  error
-	startErr error
-	stopErr  error
-	delErr   error
+	vms            map[string]bool
+	execOut        string
+	execErr        error
+	startErr       error
+	stopErr        error
+	delErr         error
+	lastExecAsUser []string
 }
 
 func newFakeProvider() *fakeProvider {
@@ -94,6 +96,7 @@ func (f *fakeProvider) Exec(_ context.Context, name string, cmd []string) (strin
 }
 
 func (f *fakeProvider) ExecAsUser(_ context.Context, name, user string, cmd []string) (string, error) {
+	f.lastExecAsUser = cmd
 	return f.execOut, f.execErr
 }
 
@@ -1143,5 +1146,77 @@ func TestCreateAlreadyExistsNotReplacedWhenRunning(t *testing.T) {
 	_, err := mgr.Create(context.Background(), spec)
 	if _, ok := err.(ErrAlreadyExists); !ok {
 		t.Errorf("expected ErrAlreadyExists for running sandbox, got %T: %v", err, err)
+	}
+}
+
+// TestCreateClonesRemoteSource verifies a gh: source is normalized and cloned
+// into the sandbox project dir. Previously remote sources were never cloned, so
+// the VM came up with no project.
+func TestCreateClonesRemoteSource(t *testing.T) {
+	mgr, provider, _, mounts, _ := newTestManager(t)
+
+	_, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name:    "clone-test",
+		Profile: "cautious",
+		Source:  "gh:muneebs/airlock",
+		CPU:     intPtr(2),
+	})
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	got := strings.Join(provider.lastExecAsUser, " ")
+	want := "git clone https://github.com/muneebs/airlock.git /home/airlock/projects/clone-test"
+	if got != want {
+		t.Errorf("clone command mismatch:\n got: %q\nwant: %q", got, want)
+	}
+	// A remote source is not a host mount, so nothing should be registered.
+	if len(mounts.mounts) != 0 {
+		t.Errorf("remote source should register no host mount, got %v", mounts.mounts)
+	}
+}
+
+// TestCreateLocalSourceDoesNotClone verifies a local path is mounted, not cloned.
+func TestCreateLocalSourceDoesNotClone(t *testing.T) {
+	mgr, provider, _, mounts, _ := newTestManager(t)
+
+	_, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name:    "local-test",
+		Profile: "dev",
+		Source:  t.TempDir(),
+		CPU:     intPtr(2),
+	})
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	if provider.lastExecAsUser != nil {
+		t.Errorf("local source should not trigger a clone, got exec %v", provider.lastExecAsUser)
+	}
+	if len(mounts.mounts) != 1 {
+		t.Errorf("local source should register exactly one host mount, got %v", mounts.mounts)
+	}
+}
+
+func TestRemoteCloneURL(t *testing.T) {
+	cases := []struct {
+		source  string
+		wantURL string
+		wantOK  bool
+	}{
+		{"gh:muneebs/airlock", "https://github.com/muneebs/airlock.git", true},
+		{"https://github.com/muneebs/airlock.git", "https://github.com/muneebs/airlock.git", true},
+		{"git@github.com:muneebs/airlock.git", "git@github.com:muneebs/airlock.git", true},
+		{"gh:only-owner", "", false},
+		{"gh:owner/repo/extra", "", false},
+		{"https://evil.com/$(whoami)", "", false},
+		{"./local/path", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		gotURL, gotOK := remoteCloneURL(c.source)
+		if gotURL != c.wantURL || gotOK != c.wantOK {
+			t.Errorf("remoteCloneURL(%q) = (%q, %v), want (%q, %v)", c.source, gotURL, gotOK, c.wantURL, c.wantOK)
+		}
 	}
 }
