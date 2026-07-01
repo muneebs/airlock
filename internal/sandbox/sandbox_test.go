@@ -646,9 +646,20 @@ func TestRunEmptyCommand(t *testing.T) {
 	}
 }
 
+// clearAgentCredentialEnv blanks every allowlisted credential var for the test,
+// so a real key present in CI cannot be captured by credential forwarding or
+// printed in a failure message.
+func clearAgentCredentialEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range agentCredentialEnv {
+		t.Setenv(key, "")
+	}
+}
+
 // TestRunAgentProfileInjectsCredentials verifies the agent profile forwards a
 // host API key into the command via env(1) so the AI CLI can authenticate.
 func TestRunAgentProfileInjectsCredentials(t *testing.T) {
+	clearAgentCredentialEnv(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test-123")
 
 	mgr, provider, _, _, _ := newTestManager(t)
@@ -664,10 +675,10 @@ func TestRunAgentProfileInjectsCredentials(t *testing.T) {
 
 	got := strings.Join(provider.lastExecAsUser, " ")
 	if !strings.HasPrefix(got, "env ANTHROPIC_API_KEY=sk-test-123 ") {
-		t.Errorf("expected credential env prefix, got %q", got)
+		t.Error("expected command to be prefixed with the forwarded credential env")
 	}
 	if !strings.Contains(got, "claude -p hi") {
-		t.Errorf("original command must be preserved, got %q", got)
+		t.Error("original command must be preserved")
 	}
 }
 
@@ -675,6 +686,7 @@ func TestRunAgentProfileInjectsCredentials(t *testing.T) {
 // non-agent sandbox (which may run untrusted software) must never receive the
 // host's API keys, even when they are set in the environment.
 func TestRunNonAgentProfileDoesNotLeakCredentials(t *testing.T) {
+	clearAgentCredentialEnv(t)
 	t.Setenv("ANTHROPIC_API_KEY", "sk-test-123")
 
 	mgr, provider, _, _, _ := newTestManager(t)
@@ -690,7 +702,34 @@ func TestRunNonAgentProfileDoesNotLeakCredentials(t *testing.T) {
 
 	got := strings.Join(provider.lastExecAsUser, " ")
 	if strings.Contains(got, "ANTHROPIC_API_KEY") || strings.Contains(got, "sk-test-123") {
-		t.Errorf("non-agent profile leaked credentials into command: %q", got)
+		t.Error("non-agent profile must not receive host credentials")
+	}
+}
+
+// TestCreateAgentProfilePropagatesAllowlist is the end-to-end guard that the
+// missing integration test would have caught: the agent profile's host
+// allowlist must reach the applied network policy (not just be defined on the
+// profile), or the agent can never reach its API.
+func TestCreateAgentProfilePropagatesAllowlist(t *testing.T) {
+	mgr, _, _, _, network := newTestManager(t)
+	if _, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name: "agent-allow", Profile: "agent", CPU: intPtr(2),
+	}); err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	if len(network.policies) == 0 {
+		t.Fatal("expected a network policy to be applied")
+	}
+	applied := network.policies[len(network.policies)-1]
+	var hasAnthropic bool
+	for _, h := range applied.AllowlistHosts {
+		if h == "api.anthropic.com" {
+			hasAnthropic = true
+		}
+	}
+	if !hasAnthropic {
+		t.Errorf("agent profile allowlist did not reach the applied policy: %v", applied.AllowlistHosts)
 	}
 }
 

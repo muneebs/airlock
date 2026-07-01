@@ -208,6 +208,10 @@ func (m *Manager) applyNetworkPolicy(ctx context.Context, name string, prof api.
 		AllowOutbound:    prof.Network.AllowOutbound,
 		AllowEstablished: prof.Network.AllowEstablished,
 		LockAfterSetup:   lockAfter,
+		// Carry the profile's host allowlist through to the applied policy (and
+		// the subsequent Lock, which preserves it). Without this the agent
+		// profile's allowlist is silently dropped and the API hosts stay blocked.
+		AllowlistHosts: append([]string(nil), prof.Network.AllowlistHosts...),
 	}
 
 	if err := m.network.ApplyPolicy(ctx, name, policy); err != nil {
