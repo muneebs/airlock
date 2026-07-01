@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,12 +16,13 @@ import (
 )
 
 type fakeProvider struct {
-	vms      map[string]bool
-	execOut  string
-	execErr  error
-	startErr error
-	stopErr  error
-	delErr   error
+	vms            map[string]bool
+	execOut        string
+	execErr        error
+	startErr       error
+	stopErr        error
+	delErr         error
+	lastExecAsUser []string
 }
 
 func newFakeProvider() *fakeProvider {
@@ -94,6 +96,7 @@ func (f *fakeProvider) Exec(_ context.Context, name string, cmd []string) (strin
 }
 
 func (f *fakeProvider) ExecAsUser(_ context.Context, name, user string, cmd []string) (string, error) {
+	f.lastExecAsUser = cmd
 	return f.execOut, f.execErr
 }
 
@@ -640,6 +643,54 @@ func TestRunEmptyCommand(t *testing.T) {
 	_, err = mgr.Run(context.Background(), "run-empty", []string{})
 	if err == nil {
 		t.Error("expected error for empty command")
+	}
+}
+
+// TestRunAgentProfileInjectsCredentials verifies the agent profile forwards a
+// host API key into the command via env(1) so the AI CLI can authenticate.
+func TestRunAgentProfileInjectsCredentials(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-123")
+
+	mgr, provider, _, _, _ := newTestManager(t)
+	if _, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name: "agent-run", Profile: "agent", CPU: intPtr(2),
+	}); err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	if _, err := mgr.Run(context.Background(), "agent-run", []string{"claude", "-p", "hi"}); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	got := strings.Join(provider.lastExecAsUser, " ")
+	if !strings.HasPrefix(got, "env ANTHROPIC_API_KEY=sk-test-123 ") {
+		t.Errorf("expected credential env prefix, got %q", got)
+	}
+	if !strings.Contains(got, "claude -p hi") {
+		t.Errorf("original command must be preserved, got %q", got)
+	}
+}
+
+// TestRunNonAgentProfileDoesNotLeakCredentials is the security guarantee: a
+// non-agent sandbox (which may run untrusted software) must never receive the
+// host's API keys, even when they are set in the environment.
+func TestRunNonAgentProfileDoesNotLeakCredentials(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-123")
+
+	mgr, provider, _, _, _ := newTestManager(t)
+	if _, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name: "dev-run", Profile: "dev", CPU: intPtr(2),
+	}); err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	if _, err := mgr.Run(context.Background(), "dev-run", []string{"npm", "test"}); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	got := strings.Join(provider.lastExecAsUser, " ")
+	if strings.Contains(got, "ANTHROPIC_API_KEY") || strings.Contains(got, "sk-test-123") {
+		t.Errorf("non-agent profile leaked credentials into command: %q", got)
 	}
 }
 

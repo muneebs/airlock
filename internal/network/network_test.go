@@ -289,3 +289,71 @@ func TestRemovePolicy(t *testing.T) {
 		t.Error("sandbox-b policy should be unaffected by removing sandbox-a")
 	}
 }
+
+// TestBuildOutputRulesAllowlistHost verifies a valid allowlisted host produces
+// an HTTPS ACCEPT rule so an AI agent can reach its API from a locked sandbox.
+func TestBuildOutputRulesAllowlistHost(t *testing.T) {
+	policy := api.NetworkPolicy{
+		AllowDNS:         true,
+		AllowEstablished: true,
+		AllowlistHosts:   []string{"api.anthropic.com"},
+	}
+	rules := BuildOutputRules(policy)
+	want := "-A OUTPUT -p tcp -d api.anthropic.com --dport 443 -j ACCEPT"
+	if !strings.Contains(rules, want) {
+		t.Errorf("expected allowlist ACCEPT rule %q in:\n%s", want, rules)
+	}
+	// The chain must still default to DROP — the allowlist narrows, never opens.
+	if !strings.Contains(rules, ":OUTPUT DROP") {
+		t.Error("allowlist must not change the default DROP policy")
+	}
+}
+
+// TestBuildOutputRulesAllowlistRejectsInjection ensures a malformed allowlist
+// entry cannot inject extra iptables directives into the ruleset. This is the
+// security guarantee behind emitting hostnames as literal text.
+func TestBuildOutputRulesAllowlistRejectsInjection(t *testing.T) {
+	policy := api.NetworkPolicy{
+		AllowlistHosts: []string{
+			"evil.com\n-A OUTPUT -j ACCEPT",
+			"has space.com",
+			"bad;host",
+		},
+	}
+	rules := BuildOutputRules(policy)
+	if strings.Contains(rules, "-A OUTPUT -j ACCEPT\n") {
+		t.Errorf("injected blanket ACCEPT leaked into ruleset:\n%s", rules)
+	}
+	if strings.Contains(rules, "has space.com") || strings.Contains(rules, "bad;host") {
+		t.Errorf("malformed hostnames must be dropped, got:\n%s", rules)
+	}
+}
+
+// TestLockPreservesAllowlist verifies that locking a sandbox carries forward the
+// host allowlist from the previously applied policy, so an AI agent's API access
+// survives the post-setup lock instead of being severed.
+func TestLockPreservesAllowlist(t *testing.T) {
+	runCmd, _ := fakeRunCmd(t)
+	lc := NewLimaControllerWithRunners(runCmd, fakeRunOutput(false))
+
+	// Simulate the profile's initial policy carrying an allowlist.
+	initial := api.NetworkPolicy{
+		AllowDNS:       true,
+		AllowlistHosts: []string{"api.anthropic.com"},
+	}
+	if err := lc.ApplyPolicy(context.Background(), "agent-box", initial); err != nil {
+		t.Fatalf("ApplyPolicy error: %v", err)
+	}
+
+	if err := lc.Lock(context.Background(), "agent-box"); err != nil {
+		t.Fatalf("Lock error: %v", err)
+	}
+
+	policy, ok := lc.CurrentPolicy("agent-box")
+	if !ok {
+		t.Fatal("expected policy after Lock()")
+	}
+	if len(policy.AllowlistHosts) != 1 || policy.AllowlistHosts[0] != "api.anthropic.com" {
+		t.Errorf("Lock() dropped the allowlist, got %v", policy.AllowlistHosts)
+	}
+}

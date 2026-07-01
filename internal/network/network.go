@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -62,17 +63,31 @@ func NewLimaControllerWithRunners(runCmd CommandRunner, runOutput OutputRunner) 
 	}
 }
 
+// allowlistHostRe matches a syntactically valid DNS hostname. It is used to
+// gate entries before they are written into the iptables ruleset, so a value
+// containing whitespace, a newline, or an iptables flag cannot inject extra
+// directives (the ruleset is otherwise treated as literal text — see the
+// SECURITY note on ApplyPolicy). Labels are alphanumeric with internal
+// hyphens, separated by dots.
+var allowlistHostRe = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+
 // Lock blocks all outbound network traffic except DNS, loopback, and
 // reply packets on already-established connections. ESTABLISHED must
 // remain allowed or Lock kills the lima ssh session that applied the
 // rule: the VM's sshd replies travel out via the OUTPUT chain, so
 // dropping ESTABLISHED drops the ssh return path and every subsequent
 // limactl shell call hangs until the client times out.
+//
+// Any host allowlist from the last applied policy is carried forward, so
+// locking a sandbox does not sever an AI agent's access to its API host.
 func (lc *LimaController) Lock(ctx context.Context, sandboxName string) error {
 	policy := api.NetworkPolicy{
 		AllowDNS:         true,
 		AllowOutbound:    false,
 		AllowEstablished: true,
+	}
+	if prev, ok := lc.CurrentPolicy(sandboxName); ok {
+		policy.AllowlistHosts = prev.AllowlistHosts
 	}
 	return lc.ApplyPolicy(ctx, sandboxName, policy)
 }
@@ -136,6 +151,19 @@ func BuildOutputRules(policy api.NetworkPolicy) string {
 	// Established connections
 	if policy.AllowEstablished {
 		rules.WriteString("-A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT\n")
+	}
+
+	// Host allowlist — reachable on HTTPS even while outbound is blocked.
+	// iptables-restore resolves each hostname to its current A records at
+	// apply time. Only well-formed hostnames are emitted: a value containing
+	// a newline or whitespace could otherwise inject additional iptables
+	// directives into the ruleset, so anything that is not a valid DNS
+	// hostname is silently dropped here rather than trusted.
+	for _, host := range policy.AllowlistHosts {
+		if !allowlistHostRe.MatchString(host) {
+			continue
+		}
+		rules.WriteString("-A OUTPUT -p tcp -d " + host + " --dport 443 -j ACCEPT\n")
 	}
 
 	// Full outbound — override the default DROP policy
