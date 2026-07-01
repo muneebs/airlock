@@ -295,18 +295,24 @@ func TestProvisionSteps_AllOptions(t *testing.T) {
 	}
 }
 
-func TestProvisionSteps_UnknownAIToolIgnored(t *testing.T) {
+func TestProvisionSteps_UnknownAIToolSurfaced(t *testing.T) {
 	p := NewLimaProviderWithPaths("/bin/true", t.TempDir(), "")
 
 	steps := p.ProvisionSteps("vm", api.ProvisionOptions{AITools: []string{"unknown-tool"}})
 	labels := stepLabels(steps)
 
+	// An unknown tool must be surfaced (not silently dropped) so a typo or an
+	// unsupported name doesn't masquerade as a clean setup.
+	var surfaced bool
 	for _, l := range labels {
 		if strings.Contains(l, "unknown-tool") {
-			t.Errorf("unknown AI tool should be ignored, got label %q", l)
+			surfaced = true
 		}
 	}
-	// An unknown tool is not npm-based, so Node should NOT be forced on.
+	if !surfaced {
+		t.Errorf("unknown AI tool should be surfaced in a step label, got %v", labels)
+	}
+	// It has no install step, so Node should NOT be forced on for it.
 	if hasPrefix(labels, "Installing Node.js") {
 		t.Errorf("unknown tool should not force Node.js: %v", labels)
 	}

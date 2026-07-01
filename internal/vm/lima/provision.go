@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/muneebs/airlock/internal/api"
 )
@@ -125,6 +126,7 @@ func (p *LimaProvider) ProvisionSteps(name string, opts api.ProvisionOptions) []
 	// cannot produce duplicates, but `--ai-tool foo --ai-tool foo` on the
 	// CLI would otherwise queue the install twice.
 	seen := make(map[string]struct{}, len(opts.AITools))
+	var unknown []string
 	for _, t := range opts.AITools {
 		if _, dup := seen[t]; dup {
 			continue
@@ -132,6 +134,11 @@ func (p *LimaProvider) ProvisionSteps(name string, opts api.ProvisionOptions) []
 		seen[t] = struct{}{}
 		tool, ok := lookupAITool(t)
 		if !ok {
+			// Previously an unrecognized name was silently dropped, so a
+			// typo or an unsupported tool (e.g. a config listing a name that
+			// isn't in the registry) looked like a successful setup while the
+			// tool was never installed. Collect these and surface them below.
+			unknown = append(unknown, t)
 			continue
 		}
 		install := tool.Install
@@ -142,6 +149,18 @@ func (p *LimaProvider) ProvisionSteps(name string, opts api.ProvisionOptions) []
 				if err := install(ctx, p, name); err != nil {
 					warnOptionalInstall(label, err)
 				}
+				return nil
+			},
+		})
+	}
+
+	if len(unknown) > 0 {
+		names := strings.Join(unknown, ", ")
+		known := strings.Join(knownAITools(), ", ")
+		steps = append(steps, api.ProvisionStep{
+			Label: "Skipping unrecognized AI tools: " + names,
+			Run: func(ctx context.Context) error {
+				fmt.Fprintf(os.Stderr, "warning: unrecognized AI tool(s) %s were not installed; known tools: %s\n", names, known)
 				return nil
 			},
 		})

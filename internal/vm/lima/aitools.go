@@ -2,6 +2,7 @@ package lima
 
 import (
 	"context"
+	"sort"
 )
 
 // aiToolInstaller describes how to install one AI CLI tool inside a VM.
@@ -23,6 +24,17 @@ func registerAITool(key string, t aiToolInstaller) {
 func lookupAITool(key string) (aiToolInstaller, bool) {
 	t, ok := aiToolRegistry[key]
 	return t, ok
+}
+
+// knownAITools returns the registered tool keys in sorted order, for use in
+// user-facing messages (e.g. warning about an unrecognized tool name).
+func knownAITools() []string {
+	keys := make([]string, 0, len(aiToolRegistry))
+	for k := range aiToolRegistry {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // aiToolRequiresNpm reports whether an AI tool is installed via npm and
