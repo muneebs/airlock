@@ -598,3 +598,26 @@ func TestUbuntuImageDigestsWellFormed(t *testing.T) {
 		}
 	}
 }
+
+// TestGenerateConfigMountTypeDefault confirms virtiofs is the default mount type.
+func TestGenerateConfigMountTypeDefault(t *testing.T) {
+	out, err := GenerateConfig(api.VMSpec{Name: "t", CPU: 2, Memory: "4GiB", Disk: "20GiB"})
+	if err != nil {
+		t.Fatalf("GenerateConfig() error: %v", err)
+	}
+	if !strings.Contains(out, "mountType: virtiofs") {
+		t.Errorf("expected default mountType virtiofs, got:\n%s", out)
+	}
+}
+
+// TestGenerateConfigMountTypeOverride confirms an explicit mount type is honored,
+// which is what the mount-type fallback relies on.
+func TestGenerateConfigMountTypeOverride(t *testing.T) {
+	out, err := GenerateConfig(api.VMSpec{Name: "t", CPU: 2, Memory: "4GiB", Disk: "20GiB", MountType: "reverse-sshfs"})
+	if err != nil {
+		t.Fatalf("GenerateConfig() error: %v", err)
+	}
+	if !strings.Contains(out, "mountType: reverse-sshfs") {
+		t.Errorf("expected mountType reverse-sshfs, got:\n%s", out)
+	}
+}

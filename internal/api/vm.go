@@ -80,6 +80,12 @@ type VMSpec struct {
 	Mounts []VMMount `json:"mounts" yaml:"mounts"`
 	Ports  string    `json:"ports,omitempty" yaml:"ports,omitempty"`
 
+	// MountType selects the host-directory sharing mechanism (provider-specific:
+	// e.g. Lima's "virtiofs" or "reverse-sshfs"). Empty means the provider
+	// default. The orchestrator sets this when retrying a failed boot with a
+	// fallback mechanism.
+	MountType string `json:"mount_type,omitempty" yaml:"mount_type,omitempty"`
+
 	// ProvisionCmds run once after first boot.
 	ProvisionCmds []string `json:"provision_cmds" yaml:"provision_cmds"`
 

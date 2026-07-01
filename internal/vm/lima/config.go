@@ -107,6 +107,11 @@ func GenerateConfig(spec api.VMSpec) (string, error) {
 		return "", fmt.Errorf("invalid vm spec: %w", err)
 	}
 
+	mountType := spec.MountType
+	if mountType == "" {
+		mountType = "virtiofs"
+	}
+
 	cfg := LimaConfig{
 		VMType:       "vz",
 		OS:           "Linux",
@@ -114,7 +119,7 @@ func GenerateConfig(spec api.VMSpec) (string, error) {
 		CPUs:         spec.CPU,
 		Memory:       spec.Memory,
 		Disk:         spec.Disk,
-		MountType:    "virtiofs",
+		MountType:    mountType,
 		StartAtLogin: spec.StartAtLogin,
 		Images: []LimaImage{
 			{Location: ubuntuImageURL("arm64"), Arch: "aarch64", Digest: ubuntuImageArm64Digest},
