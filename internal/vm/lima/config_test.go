@@ -144,6 +144,53 @@ func TestGenerateConfigValidationHostPathTraversal(t *testing.T) {
 	}
 }
 
+// TestGenerateConfigHostPathWithSpace guards the fix for the most common local
+// failure: macOS project paths contain spaces ("~/Dev/My Project"), and the
+// original charset regex rejected them, aborting sandbox creation. A spaced
+// path must now generate a valid config with the location preserved.
+func TestGenerateConfigHostPathWithSpace(t *testing.T) {
+	spec := api.VMSpec{
+		Name:   "test-vm",
+		CPU:    2,
+		Memory: "4GiB",
+		Disk:   "20GiB",
+		Mounts: []api.VMMount{
+			{HostPath: "/Users/test/My Project", GuestPath: "/home/airlock/projects/proj", Writable: true},
+		},
+	}
+	out, err := GenerateConfig(spec)
+	if err != nil {
+		t.Fatalf("spaced host_path should be accepted, got error: %v", err)
+	}
+	if !strings.Contains(out, "My Project") {
+		t.Errorf("expected mount location to be preserved in config, got:\n%s", out)
+	}
+}
+
+// TestGenerateConfigHostPathRejectsShellMetacharacters keeps the defence-in-depth
+// guarantee: broadening the charset for spaces must not admit shell
+// metacharacters that could be dangerous if the path ever reached a shell.
+func TestGenerateConfigHostPathRejectsShellMetacharacters(t *testing.T) {
+	for _, bad := range []string{
+		"/Users/test/$(whoami)",
+		"/Users/test/a;rm -rf",
+		"/Users/test/a`id`",
+		"/Users/test/a|b",
+		"/Users/test/a&b",
+	} {
+		spec := api.VMSpec{
+			Name:   "test-vm",
+			CPU:    2,
+			Memory: "4GiB",
+			Disk:   "20GiB",
+			Mounts: []api.VMMount{{HostPath: bad, GuestPath: "/mnt"}},
+		}
+		if _, err := GenerateConfig(spec); err == nil {
+			t.Errorf("expected error for host_path with shell metacharacters: %q", bad)
+		}
+	}
+}
+
 func TestGenerateConfigValidationProvisionCmdsLimit(t *testing.T) {
 	cmds := make([]string, 11)
 	for i := range cmds {
