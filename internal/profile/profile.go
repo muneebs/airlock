@@ -159,5 +159,35 @@ func builtins() []api.Profile {
 				WritableProjectDir: true,
 			},
 		},
+		{
+			Name:        "agent",
+			Description: "Writable project, network locked to AI API hosts only. For running an AI coding agent (claude, gemini, codex) on untrusted code: it can edit files and reach its model API, but nothing else outbound.",
+			Network: api.NetworkPolicy{
+				AllowDNS:         true,
+				AllowOutbound:    false,
+				AllowEstablished: true,
+				LockAfterSetup:   true,
+				// The API hosts for the AI CLIs airlock can install. Locked to
+				// HTTPS only (see BuildOutputRules). Add project-specific hosts
+				// (package registries, etc.) via config if a run needs them.
+				AllowlistHosts: []string{
+					"api.anthropic.com",
+					"api.openai.com",
+					"generativelanguage.googleapis.com",
+				},
+			},
+			Mount: api.MountPolicy{
+				Writable:        true,
+				AllowHostMounts: true,
+			},
+			Docker: api.DockerPolicy{
+				Allowed:        false,
+				ReadOnlySocket: false,
+			},
+			Filesystem: api.FilesystemPolicy{
+				WritableProjectDir: true,
+				ExtraWritablePaths: []string{"/tmp"},
+			},
+		},
 	}
 }

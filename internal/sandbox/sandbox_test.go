@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,12 +16,13 @@ import (
 )
 
 type fakeProvider struct {
-	vms      map[string]bool
-	execOut  string
-	execErr  error
-	startErr error
-	stopErr  error
-	delErr   error
+	vms            map[string]bool
+	execOut        string
+	execErr        error
+	startErr       error
+	stopErr        error
+	delErr         error
+	lastExecAsUser []string
 }
 
 func newFakeProvider() *fakeProvider {
@@ -94,6 +96,7 @@ func (f *fakeProvider) Exec(_ context.Context, name string, cmd []string) (strin
 }
 
 func (f *fakeProvider) ExecAsUser(_ context.Context, name, user string, cmd []string) (string, error) {
+	f.lastExecAsUser = cmd
 	return f.execOut, f.execErr
 }
 
@@ -640,6 +643,93 @@ func TestRunEmptyCommand(t *testing.T) {
 	_, err = mgr.Run(context.Background(), "run-empty", []string{})
 	if err == nil {
 		t.Error("expected error for empty command")
+	}
+}
+
+// clearAgentCredentialEnv blanks every allowlisted credential var for the test,
+// so a real key present in CI cannot be captured by credential forwarding or
+// printed in a failure message.
+func clearAgentCredentialEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range agentCredentialEnv {
+		t.Setenv(key, "")
+	}
+}
+
+// TestRunAgentProfileInjectsCredentials verifies the agent profile forwards a
+// host API key into the command via env(1) so the AI CLI can authenticate.
+func TestRunAgentProfileInjectsCredentials(t *testing.T) {
+	clearAgentCredentialEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-123")
+
+	mgr, provider, _, _, _ := newTestManager(t)
+	if _, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name: "agent-run", Profile: "agent", CPU: intPtr(2),
+	}); err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	if _, err := mgr.Run(context.Background(), "agent-run", []string{"claude", "-p", "hi"}); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	got := strings.Join(provider.lastExecAsUser, " ")
+	if !strings.HasPrefix(got, "env ANTHROPIC_API_KEY=sk-test-123 ") {
+		t.Error("expected command to be prefixed with the forwarded credential env")
+	}
+	if !strings.Contains(got, "claude -p hi") {
+		t.Error("original command must be preserved")
+	}
+}
+
+// TestRunNonAgentProfileDoesNotLeakCredentials is the security guarantee: a
+// non-agent sandbox (which may run untrusted software) must never receive the
+// host's API keys, even when they are set in the environment.
+func TestRunNonAgentProfileDoesNotLeakCredentials(t *testing.T) {
+	clearAgentCredentialEnv(t)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-123")
+
+	mgr, provider, _, _, _ := newTestManager(t)
+	if _, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name: "dev-run", Profile: "dev", CPU: intPtr(2),
+	}); err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	if _, err := mgr.Run(context.Background(), "dev-run", []string{"npm", "test"}); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	got := strings.Join(provider.lastExecAsUser, " ")
+	if strings.Contains(got, "ANTHROPIC_API_KEY") || strings.Contains(got, "sk-test-123") {
+		t.Error("non-agent profile must not receive host credentials")
+	}
+}
+
+// TestCreateAgentProfilePropagatesAllowlist is the end-to-end guard that the
+// missing integration test would have caught: the agent profile's host
+// allowlist must reach the applied network policy (not just be defined on the
+// profile), or the agent can never reach its API.
+func TestCreateAgentProfilePropagatesAllowlist(t *testing.T) {
+	mgr, _, _, _, network := newTestManager(t)
+	if _, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name: "agent-allow", Profile: "agent", CPU: intPtr(2),
+	}); err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	if len(network.policies) == 0 {
+		t.Fatal("expected a network policy to be applied")
+	}
+	applied := network.policies[len(network.policies)-1]
+	var hasAnthropic bool
+	for _, h := range applied.AllowlistHosts {
+		if h == "api.anthropic.com" {
+			hasAnthropic = true
+		}
+	}
+	if !hasAnthropic {
+		t.Errorf("agent profile allowlist did not reach the applied policy: %v", applied.AllowlistHosts)
 	}
 }
 

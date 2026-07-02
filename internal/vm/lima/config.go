@@ -159,7 +159,17 @@ func parsePortRange(s string) (LimaPortForward, error) {
 	}, nil
 }
 
-var safePathRe = regexp.MustCompile(`^[a-zA-Z0-9_./-]+$`)
+// safePathRe matches host mount paths that are safe to embed in the generated
+// Lima YAML. The value is only ever emitted as a yaml-marshalled scalar (never
+// interpolated into a shell command), so the goal is to reject shell
+// metacharacters and control characters as defence-in-depth while still
+// accepting real-world macOS paths — which routinely contain spaces (e.g.
+// "~/Dev/My Project"). The previous pattern rejected any space, which failed
+// sandbox creation for a large fraction of local projects. Allowed set mirrors
+// safeProvisionCmd (space, hyphen, underscore, dot, slash, colon, equals,
+// tilde, at, plus, comma, hash). Forbids: ; & | $ ` \ " ' < > ( ) { } and
+// control characters. Path traversal ("..") is rejected separately below.
+var safePathRe = regexp.MustCompile(`^[a-zA-Z0-9 _./:~=+@#,-]+$`)
 
 func isSensitiveMountPath(path string) bool {
 	cleaned := filepath.Clean(path)
