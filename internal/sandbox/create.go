@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/muneebs/airlock/internal/api"
 	"github.com/muneebs/airlock/internal/detect"
@@ -106,9 +107,34 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 		return api.SandboxInfo{}, fmt.Errorf("start VM: %w", err)
 	}
 
+	// Remote sources are git-cloned into the VM. This must happen after the VM
+	// boots but BEFORE the network policy is applied: a locking profile
+	// (cautious/strict/agent) would otherwise block git from reaching the
+	// remote. A freshly booted VM has open egress until applyNetworkPolicy runs.
+	if isRemoteSource(spec.Source) {
+		report("cloning source")
+		if err := m.cloneRemoteSource(ctx, spec.Name, spec.Source); err != nil {
+			if delErr := m.provider.Delete(ctx, spec.Name); delErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: rollback delete VM %q: %v\n", spec.Name, delErr)
+			}
+			m.mu.Lock()
+			info.State = api.StateErrored
+			_ = m.put(info)
+			m.mu.Unlock()
+			return api.SandboxInfo{}, fmt.Errorf("clone source: %w", err)
+		}
+	}
+
 	if !opts.SkipNetworkPolicy {
 		report("applying network policy")
 		if err := m.applyNetworkPolicy(ctx, spec.Name, prof, spec.LockNetworkAfterSetup); err != nil {
+			// The VM is booted with open egress at this point (and, for a remote
+			// source, already holds the cloned code). Leaving it running without
+			// the requested restrictions is worse than not creating it, so tear
+			// it down rather than just marking the record errored.
+			if delErr := m.provider.Delete(ctx, spec.Name); delErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: rollback delete VM %q: %v\n", spec.Name, delErr)
+			}
 			m.mu.Lock()
 			info.State = api.StateErrored
 			_ = m.put(info)
@@ -117,7 +143,9 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 		}
 	}
 
-	if spec.Source != "" {
+	// Only local sources are host mounts. Remote sources live inside the VM
+	// (cloned above), so there is nothing to register.
+	if spec.Source != "" && !isRemoteSource(spec.Source) {
 		report("registering mount")
 		if err := m.mounts.Register(ctx, spec.Name, api.Mount{
 			Name:     spec.Name,
@@ -145,6 +173,47 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 
 	report("ready")
 	return *info, nil
+}
+
+// cloneRemoteSource git-clones a remote SandboxSpec.Source into the sandbox's
+// project directory as the airlock user, so the repo lands where Shell and Run
+// expect it (/home/airlock/projects/<name>). The URL is normalized and
+// validated by remoteCloneURL; git receives it as a distinct, shell-escaped
+// argument via ExecAsUser.
+func (m *Manager) cloneRemoteSource(ctx context.Context, name, source string) error {
+	url, ok := remoteCloneURL(source)
+	if !ok {
+		return fmt.Errorf("unsupported or invalid remote source %q", source)
+	}
+	// Defence in depth: the VM name is already charset-validated by the provider
+	// before we get here, but this helper builds a guest path from it directly,
+	// so reject any name that could escape /home/airlock/projects/<name> rather
+	// than rely on the caller.
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("invalid sandbox name %q", name)
+	}
+	dest := "/home/airlock/projects/" + name
+	if _, err := m.provider.ExecAsUser(ctx, name, "airlock", []string{"git", "clone", url, dest}); err != nil {
+		// Redact any userinfo (https://user:token@host) so a credential-bearing
+		// clone URL never reaches logs or CLI output.
+		return fmt.Errorf("git clone %s: %w", redactURLCredentials(url), err)
+	}
+	return nil
+}
+
+// redactURLCredentials strips a "user:pass@" / "token@" userinfo component from a
+// URL so it is safe to log. Non-URL or userinfo-free strings are returned as-is.
+func redactURLCredentials(rawURL string) string {
+	schemeEnd := strings.Index(rawURL, "//")
+	if schemeEnd == -1 {
+		return rawURL
+	}
+	authStart := schemeEnd + 2
+	at := strings.Index(rawURL[authStart:], "@")
+	if at == -1 {
+		return rawURL
+	}
+	return rawURL[:authStart] + "***@" + rawURL[authStart+at+1:]
 }
 
 func (m *Manager) resolveRuntime(spec api.SandboxSpec) (api.RuntimeType, error) {

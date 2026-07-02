@@ -152,6 +152,7 @@ type fakeNetworkController struct {
 	locked   []string
 	unlocked []string
 	removed  []string
+	applyErr error
 }
 
 func (f *fakeNetworkController) Lock(_ context.Context, sandboxName string) error {
@@ -165,6 +166,9 @@ func (f *fakeNetworkController) Unlock(_ context.Context, sandboxName string) er
 }
 
 func (f *fakeNetworkController) ApplyPolicy(_ context.Context, sandboxName string, policy api.NetworkPolicy) error {
+	if f.applyErr != nil {
+		return f.applyErr
+	}
 	f.policies = append(f.policies, policy)
 	return nil
 }
@@ -1233,5 +1237,120 @@ func TestCreateAlreadyExistsNotReplacedWhenRunning(t *testing.T) {
 	_, err := mgr.Create(context.Background(), spec)
 	if _, ok := err.(ErrAlreadyExists); !ok {
 		t.Errorf("expected ErrAlreadyExists for running sandbox, got %T: %v", err, err)
+	}
+}
+
+// TestCreateClonesRemoteSource verifies a gh: source is normalized and cloned
+// into the sandbox project dir. Previously remote sources were never cloned, so
+// the VM came up with no project.
+func TestCreateClonesRemoteSource(t *testing.T) {
+	mgr, provider, _, mounts, _ := newTestManager(t)
+
+	_, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name:    "clone-test",
+		Profile: "cautious",
+		Source:  "gh:muneebs/airlock",
+		CPU:     intPtr(2),
+	})
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	got := strings.Join(provider.lastExecAsUser, " ")
+	want := "git clone https://github.com/muneebs/airlock.git /home/airlock/projects/clone-test"
+	if got != want {
+		t.Errorf("clone command mismatch:\n got: %q\nwant: %q", got, want)
+	}
+	// A remote source is not a host mount, so nothing should be registered.
+	if len(mounts.mounts) != 0 {
+		t.Errorf("remote source should register no host mount, got %v", mounts.mounts)
+	}
+}
+
+// TestCreateLocalSourceDoesNotClone verifies a local path is mounted, not cloned.
+func TestCreateLocalSourceDoesNotClone(t *testing.T) {
+	mgr, provider, _, mounts, _ := newTestManager(t)
+
+	_, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name:    "local-test",
+		Profile: "dev",
+		Source:  t.TempDir(),
+		CPU:     intPtr(2),
+	})
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	if provider.lastExecAsUser != nil {
+		t.Errorf("local source should not trigger a clone, got exec %v", provider.lastExecAsUser)
+	}
+	if len(mounts.mounts) != 1 {
+		t.Errorf("local source should register exactly one host mount, got %v", mounts.mounts)
+	}
+}
+
+func TestRemoteCloneURL(t *testing.T) {
+	cases := []struct {
+		source  string
+		wantURL string
+		wantOK  bool
+	}{
+		{"gh:muneebs/airlock", "https://github.com/muneebs/airlock.git", true},
+		{"https://github.com/muneebs/airlock.git", "https://github.com/muneebs/airlock.git", true},
+		{"git@github.com:muneebs/airlock.git", "git@github.com:muneebs/airlock.git", true},
+		{"gh:only-owner", "", false},
+		{"gh:owner/repo/extra", "", false},
+		{"https://evil.com/$(whoami)", "", false},
+		{"./local/path", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		gotURL, gotOK := remoteCloneURL(c.source)
+		if gotURL != c.wantURL || gotOK != c.wantOK {
+			t.Errorf("remoteCloneURL(%q) = (%q, %v), want (%q, %v)", c.source, gotURL, gotOK, c.wantURL, c.wantOK)
+		}
+	}
+}
+
+// TestCreateRollsBackVMOnNetworkPolicyFailure verifies a booted VM is torn down
+// (not left running with open egress) when the network policy fails to apply.
+func TestCreateRollsBackVMOnNetworkPolicyFailure(t *testing.T) {
+	mgr, provider, _, _, network := newTestManager(t)
+	network.applyErr = fmt.Errorf("iptables-restore failed")
+
+	_, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name: "netfail", Profile: "cautious", CPU: intPtr(2),
+	})
+	if err == nil {
+		t.Fatal("expected Create() to fail when network policy fails")
+	}
+	if _, exists := provider.vms["netfail"]; exists {
+		t.Error("VM should be deleted when network policy fails, not left running")
+	}
+}
+
+// TestCloneRejectsUnsafeName verifies a name that could escape the project
+// directory is rejected before a clone is attempted.
+func TestCloneRejectsUnsafeName(t *testing.T) {
+	mgr, _, _, _, _ := newTestManager(t)
+	for _, bad := range []string{"..", ".", "a/b", "a\\b"} {
+		if err := mgr.cloneRemoteSource(context.Background(), bad, "gh:o/r"); err == nil {
+			t.Errorf("expected rejection of unsafe name %q", bad)
+		}
+	}
+}
+
+// TestRedactURLCredentials verifies userinfo is stripped so tokens never reach logs.
+func TestRedactURLCredentials(t *testing.T) {
+	cases := map[string]string{
+		"https://user:ghp_secret@github.com/o/r.git": "https://***@github.com/o/r.git",
+		"https://token@github.com/o/r.git":           "https://***@github.com/o/r.git",
+		"https://github.com/o/r.git":                 "https://github.com/o/r.git",
+		"git@github.com:o/r.git":                     "git@github.com:o/r.git",
+	}
+	for in, want := range cases {
+		if got := redactURLCredentials(in); got != want {
+			t.Errorf("redactURLCredentials(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
