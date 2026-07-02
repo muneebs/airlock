@@ -60,6 +60,27 @@ type LimaConfig struct {
 type LimaImage struct {
 	Location string `yaml:"location"`
 	Arch     string `yaml:"arch"`
+	Digest   string `yaml:"digest,omitempty"`
+}
+
+// Base image pinning. The Ubuntu 24.04 cloud image is pinned to an immutable
+// dated snapshot and verified against its published SHA256 digest, so every VM
+// boots from a known, integrity-checked image rather than the mutable "release"
+// symlink (which silently changes as Ubuntu ships new builds).
+//
+// To adopt a newer image: pick a snapshot from
+// https://cloud-images.ubuntu.com/releases/24.04/ and update BOTH the release
+// and the matching digests from that snapshot's SHA256SUMS. A digest mismatch
+// makes Lima refuse the image (fails closed) — that is the intended safety net.
+const (
+	ubuntuImageRelease     = "release-20260615"
+	ubuntuImageArm64Digest = "sha256:cafa1a965b591b7c4184b484ffd8e625981a79d48f9b4ae8a4adf7b4c5ade927"
+	ubuntuImageAmd64Digest = "sha256:5fa5b05e5ec239858c4531485d6023b0896448c2df7c63b34f8dae6ea6051a44"
+)
+
+func ubuntuImageURL(arch string) string {
+	return "https://cloud-images.ubuntu.com/releases/24.04/" + ubuntuImageRelease +
+		"/ubuntu-24.04-server-cloudimg-" + arch + ".img"
 }
 
 type LimaMount struct {
@@ -96,8 +117,8 @@ func GenerateConfig(spec api.VMSpec) (string, error) {
 		MountType:    "virtiofs",
 		StartAtLogin: spec.StartAtLogin,
 		Images: []LimaImage{
-			{Location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img", Arch: "aarch64"},
-			{Location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img", Arch: "x86_64"},
+			{Location: ubuntuImageURL("arm64"), Arch: "aarch64", Digest: ubuntuImageArm64Digest},
+			{Location: ubuntuImageURL("amd64"), Arch: "x86_64", Digest: ubuntuImageAmd64Digest},
 		},
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -562,5 +563,38 @@ func TestGenerateConfigValidationProvisionCmdWhitelist(t *testing.T) {
 				t.Errorf("unexpected error for provision cmd %q: %v", tt.cmd, err)
 			}
 		})
+	}
+}
+
+// TestGenerateConfigPinsBaseImageDigest verifies the base image is pinned to an
+// immutable dated snapshot and carries a digest, rather than the mutable
+// "release" symlink that silently changes.
+func TestGenerateConfigPinsBaseImageDigest(t *testing.T) {
+	out, err := GenerateConfig(api.VMSpec{Name: "t", CPU: 2, Memory: "4GiB", Disk: "20GiB"})
+	if err != nil {
+		t.Fatalf("GenerateConfig() error: %v", err)
+	}
+	if !strings.Contains(out, ubuntuImageRelease) {
+		t.Errorf("expected pinned snapshot %q in config:\n%s", ubuntuImageRelease, out)
+	}
+	if strings.Contains(out, "/release/ubuntu-24.04") {
+		t.Error("config must not use the mutable /release/ symlink URL")
+	}
+	if !strings.Contains(out, ubuntuImageArm64Digest) {
+		t.Errorf("expected arm64 digest %q in config", ubuntuImageArm64Digest)
+	}
+	if !strings.Contains(out, ubuntuImageAmd64Digest) {
+		t.Errorf("expected amd64 digest %q in config", ubuntuImageAmd64Digest)
+	}
+}
+
+// TestUbuntuImageDigestsWellFormed guards against a typo'd pin: each digest must
+// be sha256: followed by 64 lowercase hex characters.
+func TestUbuntuImageDigestsWellFormed(t *testing.T) {
+	re := regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	for _, d := range []string{ubuntuImageArm64Digest, ubuntuImageAmd64Digest} {
+		if !re.MatchString(d) {
+			t.Errorf("malformed image digest: %q", d)
+		}
 	}
 }
