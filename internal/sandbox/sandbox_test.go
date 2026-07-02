@@ -23,6 +23,11 @@ type fakeProvider struct {
 	stopErr        error
 	delErr         error
 	lastExecAsUser []string
+	createSpecs    []api.VMSpec
+	startCalls     int
+	// startMountFailTimes makes the first N Start calls return a mount-like
+	// error, to exercise the mount-type fallback.
+	startMountFailTimes int
 }
 
 func newFakeProvider() *fakeProvider {
@@ -33,11 +38,16 @@ func (f *fakeProvider) Create(_ context.Context, spec api.VMSpec) error {
 	if _, exists := f.vms[spec.Name]; exists {
 		return fmt.Errorf("vm %s already exists", spec.Name)
 	}
+	f.createSpecs = append(f.createSpecs, spec)
 	f.vms[spec.Name] = false
 	return nil
 }
 
 func (f *fakeProvider) Start(_ context.Context, name string) error {
+	f.startCalls++
+	if f.startCalls <= f.startMountFailTimes {
+		return fmt.Errorf("could not start VM: virtiofs mount setup failed")
+	}
 	if f.startErr != nil {
 		return f.startErr
 	}
@@ -46,6 +56,15 @@ func (f *fakeProvider) Start(_ context.Context, name string) error {
 	}
 	f.vms[name] = true
 	return nil
+}
+
+// createdMountTypes returns the MountType of each Create call, in order.
+func (f *fakeProvider) createdMountTypes() []string {
+	out := make([]string, len(f.createSpecs))
+	for i, s := range f.createSpecs {
+		out[i] = s.MountType
+	}
+	return out
 }
 
 func (f *fakeProvider) Stop(_ context.Context, name string) error {
@@ -1352,5 +1371,92 @@ func TestRedactURLCredentials(t *testing.T) {
 		if got := redactURLCredentials(in); got != want {
 			t.Errorf("redactURLCredentials(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestCreateFallsBackOnMountError verifies that a mount-related boot failure on
+// virtiofs triggers a recreate with the reverse-sshfs fallback and succeeds.
+func TestCreateFallsBackOnMountError(t *testing.T) {
+	mgr, provider, _, _, _ := newTestManager(t)
+	provider.startMountFailTimes = 1 // first boot fails (virtiofs), second succeeds
+
+	info, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name:    "fallback-test",
+		Profile: "dev",
+		Source:  t.TempDir(), // a mount is required for fallback to apply
+		CPU:     intPtr(2),
+	})
+	if err != nil {
+		t.Fatalf("Create() should succeed via fallback, got: %v", err)
+	}
+	if info.State != api.StateRunning {
+		t.Errorf("expected running, got %s", info.State)
+	}
+	got := provider.createdMountTypes()
+	want := []string{"virtiofs", "reverse-sshfs"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("mount-type sequence = %v, want %v", got, want)
+	}
+}
+
+// TestCreateMountFallbackExhausted verifies that when every mount mechanism
+// fails, Create errors and leaves no VM behind.
+func TestCreateMountFallbackExhausted(t *testing.T) {
+	mgr, provider, _, _, _ := newTestManager(t)
+	provider.startMountFailTimes = 2 // both virtiofs and reverse-sshfs fail
+
+	_, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name:    "exhausted-test",
+		Profile: "dev",
+		Source:  t.TempDir(),
+		CPU:     intPtr(2),
+	})
+	if err == nil {
+		t.Fatal("expected Create() to fail when all mount types fail")
+	}
+	if n := len(provider.createSpecs); n != 2 {
+		t.Errorf("expected 2 create attempts, got %d", n)
+	}
+	if _, exists := provider.vms["exhausted-test"]; exists {
+		t.Error("failed VM should have been deleted")
+	}
+}
+
+// TestCreateNonMountStartErrorNoRetry verifies a non-mount boot failure is not
+// retried with a different mount type.
+func TestCreateNonMountStartErrorNoRetry(t *testing.T) {
+	mgr, provider, _, _, _ := newTestManager(t)
+	provider.startErr = fmt.Errorf("ssh timed out waiting for guest")
+
+	_, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name:    "nonmount-test",
+		Profile: "dev",
+		Source:  t.TempDir(),
+		CPU:     intPtr(2),
+	})
+	if err == nil {
+		t.Fatal("expected Create() to fail on non-mount start error")
+	}
+	if n := len(provider.createSpecs); n != 1 {
+		t.Errorf("non-mount error should not retry; got %d create attempts", n)
+	}
+}
+
+// TestCreateMountlessVMNoFallback verifies a VM without host mounts is only
+// attempted once — there is nothing to fall back on.
+func TestCreateMountlessVMNoFallback(t *testing.T) {
+	mgr, provider, _, _, _ := newTestManager(t)
+	provider.startMountFailTimes = 1
+
+	_, err := mgr.Create(context.Background(), api.SandboxSpec{
+		Name:    "mountless-test",
+		Profile: "dev",
+		CPU:     intPtr(2),
+	})
+	if err == nil {
+		t.Fatal("expected failure (single attempt, no fallback)")
+	}
+	if n := len(provider.createSpecs); n != 1 {
+		t.Errorf("mountless VM should be attempted once, got %d", n)
 	}
 }

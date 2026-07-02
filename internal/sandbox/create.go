@@ -86,25 +86,12 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 
 	vmSpec := resolveResources(spec, prof, defaultSpec())
 
-	report("creating lima vm")
-	if err := m.provider.Create(ctx, vmSpec); err != nil {
+	if err := m.createAndStartVM(ctx, spec.Name, vmSpec, report); err != nil {
 		m.mu.Lock()
 		info.State = api.StateErrored
 		_ = m.put(info)
 		m.mu.Unlock()
-		return api.SandboxInfo{}, fmt.Errorf("create VM: %w", err)
-	}
-
-	report("booting vm (waiting for ssh)")
-	if err := m.provider.Start(ctx, spec.Name); err != nil {
-		if delErr := m.provider.Delete(ctx, spec.Name); delErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: rollback delete VM %q: %v\n", spec.Name, delErr)
-		}
-		m.mu.Lock()
-		info.State = api.StateErrored
-		_ = m.put(info)
-		m.mu.Unlock()
-		return api.SandboxInfo{}, fmt.Errorf("start VM: %w", err)
+		return api.SandboxInfo{}, err
 	}
 
 	// Remote sources are git-cloned into the VM. This must happen after the VM
@@ -214,6 +201,64 @@ func redactURLCredentials(rawURL string) string {
 		return rawURL
 	}
 	return rawURL[:authStart] + "***@" + rawURL[authStart+at+1:]
+}
+
+// mountTypeFallbacks is the ordered list of host-mount mechanisms tried when
+// bringing up a VM. virtiofs is fastest but fails to mount on some macOS/Lima
+// combinations; reverse-sshfs is the widely-compatible fallback. When a boot
+// fails in a way that looks mount-related, the VM is recreated with the next
+// mechanism.
+func mountTypeFallbacks() []string { return []string{"virtiofs", "reverse-sshfs"} }
+
+// isMountError reports whether a VM start failure looks like a host-mount
+// problem, and therefore worth retrying with a different mount mechanism.
+func isMountError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{"virtiofs", "reverse-sshfs", "sshfs", "9p", "mount"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// createAndStartVM creates and boots the VM, retrying with a fallback host-mount
+// mechanism when a start failure looks mount-related. It leaves no VM behind on
+// a failed attempt. A VM with no host mounts has nothing to fall back on, so a
+// single attempt is made in that case.
+func (m *Manager) createAndStartVM(ctx context.Context, name string, vmSpec api.VMSpec, report func(string)) error {
+	types := mountTypeFallbacks()
+	if len(vmSpec.Mounts) == 0 {
+		types = types[:1]
+	}
+
+	var lastErr error
+	for i, mt := range types {
+		vmSpec.MountType = mt
+
+		report("creating lima vm")
+		if err := m.provider.Create(ctx, vmSpec); err != nil {
+			return fmt.Errorf("create VM: %w", err)
+		}
+
+		report("booting vm (waiting for ssh)")
+		if err := m.provider.Start(ctx, name); err != nil {
+			lastErr = err
+			if delErr := m.provider.Delete(ctx, name); delErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: rollback delete VM %q: %v\n", name, delErr)
+			}
+			if i < len(types)-1 && isMountError(err) {
+				report(fmt.Sprintf("mount failed; retrying with %s", types[i+1]))
+				continue
+			}
+			return fmt.Errorf("start VM: %w", lastErr)
+		}
+		return nil
+	}
+	return fmt.Errorf("start VM: %w", lastErr)
 }
 
 func (m *Manager) resolveRuntime(spec api.SandboxSpec) (api.RuntimeType, error) {
