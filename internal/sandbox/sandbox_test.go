@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,11 @@ import (
 )
 
 type fakeProvider struct {
+	// mu guards all mutable fields below so tests that drive the Manager
+	// concurrently (e.g. TestCreateConcurrentDuplicate) don't race on the
+	// vms map or the call counters. The real LimaProvider shells out and
+	// keeps no shared in-process state, so this is a fake-only concern.
+	mu          sync.Mutex
 	vms         map[string]bool
 	execOut     string
 	execErr     error
@@ -42,6 +48,8 @@ func newFakeProvider() *fakeProvider {
 }
 
 func (f *fakeProvider) Create(_ context.Context, spec api.VMSpec) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if _, exists := f.vms[spec.Name]; exists {
 		return fmt.Errorf("vm %s already exists", spec.Name)
 	}
@@ -51,6 +59,8 @@ func (f *fakeProvider) Create(_ context.Context, spec api.VMSpec) error {
 }
 
 func (f *fakeProvider) Start(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.startCalls++
 	if f.startCalls <= f.startMountFailTimes {
 		return fmt.Errorf("could not start VM: virtiofs mount setup failed")
@@ -67,6 +77,8 @@ func (f *fakeProvider) Start(_ context.Context, name string) error {
 
 // createdMountTypes returns the MountType of each Create call, in order.
 func (f *fakeProvider) createdMountTypes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := make([]string, len(f.createSpecs))
 	for i, s := range f.createSpecs {
 		out[i] = s.MountType
@@ -75,6 +87,8 @@ func (f *fakeProvider) createdMountTypes() []string {
 }
 
 func (f *fakeProvider) Stop(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.stopErr != nil {
 		return f.stopErr
 	}
@@ -86,6 +100,8 @@ func (f *fakeProvider) Stop(_ context.Context, name string) error {
 }
 
 func (f *fakeProvider) Delete(ctx context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.deleteCalls++
 	f.lastDeleteCtxErr = ctx.Err()
 	if f.delErr != nil {
@@ -96,11 +112,15 @@ func (f *fakeProvider) Delete(ctx context.Context, name string) error {
 }
 
 func (f *fakeProvider) Exists(_ context.Context, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	_, ok := f.vms[name]
 	return ok, nil
 }
 
 func (f *fakeProvider) IsRunning(_ context.Context, name string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	running, ok := f.vms[name]
 	if !ok {
 		return false, nil
@@ -109,6 +129,8 @@ func (f *fakeProvider) IsRunning(_ context.Context, name string) (bool, error) {
 }
 
 func (f *fakeProvider) Status(_ context.Context, name string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	running, ok := f.vms[name]
 	if !ok {
 		return "", nil
@@ -120,10 +142,14 @@ func (f *fakeProvider) Status(_ context.Context, name string) (string, error) {
 }
 
 func (f *fakeProvider) Exec(_ context.Context, name string, cmd []string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.execOut, f.execErr
 }
 
 func (f *fakeProvider) ExecAsUser(_ context.Context, name, user string, cmd []string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastExecAsUser = cmd
 	f.execAsUserCalls++
 	return f.execOut, f.execErr
@@ -218,6 +244,8 @@ func (f *fakeMountManager) Apply(_ context.Context, sandboxName string) error {
 }
 
 type fakeNetworkController struct {
+	// mu guards the slices below for tests that create sandboxes concurrently.
+	mu       sync.Mutex
 	policies []api.NetworkPolicy
 	locked   []string
 	unlocked []string
@@ -226,16 +254,22 @@ type fakeNetworkController struct {
 }
 
 func (f *fakeNetworkController) Lock(_ context.Context, sandboxName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.locked = append(f.locked, sandboxName)
 	return nil
 }
 
 func (f *fakeNetworkController) Unlock(_ context.Context, sandboxName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.unlocked = append(f.unlocked, sandboxName)
 	return nil
 }
 
 func (f *fakeNetworkController) ApplyPolicy(_ context.Context, sandboxName string, policy api.NetworkPolicy) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.applyErr != nil {
 		return f.applyErr
 	}
@@ -244,10 +278,14 @@ func (f *fakeNetworkController) ApplyPolicy(_ context.Context, sandboxName strin
 }
 
 func (f *fakeNetworkController) IsLocked(_ context.Context, sandboxName string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return len(f.locked) > len(f.unlocked), nil
 }
 
 func (f *fakeNetworkController) RemovePolicy(_ context.Context, sandboxName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.removed = append(f.removed, sandboxName)
 	return nil
 }
