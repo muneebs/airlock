@@ -94,6 +94,30 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 		return api.SandboxInfo{}, err
 	}
 
+	// Provision the freshly booted VM with the shared baseline+runtime steps
+	// (same machinery setup uses). This must run BEFORE cloneRemoteSource — the
+	// clone runs as the airlock user, which the baseline steps create — and
+	// BEFORE applyNetworkPolicy, because a Node install needs open egress and a
+	// locking profile would otherwise cut it off. The baseline "Preparing
+	// airlock home" step chowns /home/airlock/projects so the already-mounted
+	// worktree is traversable by the airlock run-user.
+	if opts.Provision {
+		report("provisioning sandbox")
+		if err := m.provisioner.ProvisionVM(ctx, spec.Name, provisionOptionsForRuntime(runtimeType)); err != nil {
+			// The VM booted but is unusable without its baseline (no airlock
+			// user, no runtime). Tear it down and mark the record errored, as
+			// the neighboring clone/network steps do on failure.
+			if delErr := m.provider.Delete(ctx, spec.Name); delErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: rollback delete VM %q: %v\n", spec.Name, delErr)
+			}
+			m.mu.Lock()
+			info.State = api.StateErrored
+			_ = m.put(info)
+			m.mu.Unlock()
+			return api.SandboxInfo{}, fmt.Errorf("provision sandbox: %w", err)
+		}
+	}
+
 	// Remote sources are git-cloned into the VM. This must happen after the VM
 	// boots but BEFORE the network policy is applied: a locking profile
 	// (cautious/strict/agent) would otherwise block git from reaching the
@@ -259,6 +283,20 @@ func (m *Manager) createAndStartVM(ctx context.Context, name string, vmSpec api.
 		return nil
 	}
 	return fmt.Errorf("start VM: %w", lastErr)
+}
+
+// provisionOptionsForRuntime maps a resolved runtime to the provisioning
+// options for a per-ticket sandbox. Every runtime gets the baseline (system
+// packages, airlock user, passwordless sudo, /home/airlock) via the empty
+// options; node additionally requests Node.js/npm/pnpm. NodeVersion is left
+// zero so ProvisionSteps applies its default (currently 22). Bun/Docker/AI
+// tools are intentionally out of scope for per-ticket sandboxes.
+func provisionOptionsForRuntime(rt api.RuntimeType) api.ProvisionOptions {
+	opts := api.ProvisionOptions{}
+	if rt == api.RuntimeNode {
+		opts.InstallNode = true
+	}
+	return opts
 }
 
 func (m *Manager) resolveRuntime(spec api.SandboxSpec) (api.RuntimeType, error) {

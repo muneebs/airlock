@@ -347,14 +347,19 @@ Security profiles:
 				Ports:     ports,
 			}
 
+			// Provision:true runs the shared baseline+runtime provisioning
+			// inside Create so the per-ticket VM gets the airlock user, sudo,
+			// /home/airlock and (for --runtime node) Node — the same steps the
+			// base VM gets. Without it the sandbox boots as a bare image and
+			// `airlock run` fails with "unknown user airlock".
 			var info api.SandboxInfo
 			var createErr error
 			if jsonOutput {
-				info, createErr = deps.Manager.Create(ctx, spec)
+				info, createErr = deps.Manager.CreateWithOptions(ctx, spec, api.CreateOptions{Provision: true})
 			} else {
 				createErr = tui.RunSpinner("Creating sandbox "+name, "Sandbox "+name+" created", func() error {
 					var err error
-					info, err = deps.Manager.Create(ctx, spec)
+					info, err = deps.Manager.CreateWithOptions(ctx, spec, api.CreateOptions{Provision: true})
 					return err
 				})
 			}

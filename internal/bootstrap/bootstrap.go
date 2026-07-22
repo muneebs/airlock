@@ -64,6 +64,7 @@ func Assemble() (*Dependencies, error) {
 	mgr, err := sandbox.NewManager(
 		limaProvider,
 		limaProvider,
+		limaProvider,
 		detector,
 		profiles,
 		mountStore,
