@@ -16,16 +16,22 @@ import (
 )
 
 type fakeProvider struct {
-	vms             map[string]bool
-	execOut         string
-	execErr         error
-	startErr        error
-	stopErr         error
-	delErr          error
-	lastExecAsUser  []string
-	execAsUserCalls int
-	createSpecs     []api.VMSpec
-	startCalls      int
+	vms         map[string]bool
+	execOut     string
+	execErr     error
+	startErr    error
+	stopErr     error
+	delErr      error
+	deleteCalls int
+	// lastDeleteCtxErr snapshots ctx.Err() at the instant Delete is called.
+	// Snapshotting is required because callers may cancel the context (via a
+	// deferred cancel) as soon as Delete returns, which would make a stored
+	// context reference read as canceled after the fact.
+	lastDeleteCtxErr error
+	lastExecAsUser   []string
+	execAsUserCalls  int
+	createSpecs      []api.VMSpec
+	startCalls       int
 	// startMountFailTimes makes the first N Start calls return a mount-like
 	// error, to exercise the mount-type fallback.
 	startMountFailTimes int
@@ -79,7 +85,9 @@ func (f *fakeProvider) Stop(_ context.Context, name string) error {
 	return nil
 }
 
-func (f *fakeProvider) Delete(_ context.Context, name string) error {
+func (f *fakeProvider) Delete(ctx context.Context, name string) error {
+	f.deleteCalls++
+	f.lastDeleteCtxErr = ctx.Err()
 	if f.delErr != nil {
 		return f.delErr
 	}

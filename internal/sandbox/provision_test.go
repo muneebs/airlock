@@ -171,3 +171,36 @@ func TestCreateProvisionFailureRollsBack(t *testing.T) {
 		t.Errorf("expected errored state after provision failure, got %s", info.State)
 	}
 }
+
+// TestCreateRollbackUsesDetachedContext guards against the rollback aborting
+// itself: when provisioning fails because the request context was canceled,
+// the cleanup Delete must run on a context detached from that cancellation, or
+// a running VM leaks. Regresses the CodeRabbit finding on the opts.Provision
+// rollback path.
+func TestCreateRollbackUsesDetachedContext(t *testing.T) {
+	mgr, provider, _, provisioner := newProvisionTestManager(t)
+	provisioner.err = context.Canceled
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // request context is already canceled when provisioning fails
+
+	spec := api.SandboxSpec{
+		Name:    "rollback-ctx",
+		Runtime: "node",
+		Profile: "dev",
+		CPU:     intPtr(2),
+	}
+	if _, err := mgr.CreateWithOptions(ctx, spec, api.CreateOptions{Provision: true}); err == nil {
+		t.Fatal("expected error when provisioning fails")
+	}
+
+	if provider.deleteCalls == 0 {
+		t.Fatal("expected rollback to call provider.Delete")
+	}
+	if provider.lastDeleteCtxErr != nil {
+		t.Errorf("rollback Delete ran on a canceled context (%v); it must use a detached cleanup context", provider.lastDeleteCtxErr)
+	}
+	if _, ok := provider.vms["rollback-ctx"]; ok {
+		t.Error("expected VM to be deleted during rollback even with a canceled request context")
+	}
+}
