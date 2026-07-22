@@ -65,6 +65,23 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 		return api.SandboxInfo{}, ErrInvalidSpec{Reason: "name is required"}
 	}
 
+	// Reserve the name for the duration of this create. A concurrent create for
+	// the same name is rejected here rather than being allowed to race — without
+	// this, the second create sees the first's in-progress "creating" record,
+	// treats it as a crashed attempt, and tears it down, so both can proceed.
+	m.mu.Lock()
+	if m.creating[spec.Name] {
+		m.mu.Unlock()
+		return api.SandboxInfo{}, ErrAlreadyExists{Name: spec.Name}
+	}
+	m.creating[spec.Name] = true
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.creating, spec.Name)
+		m.mu.Unlock()
+	}()
+
 	report("checking host resources")
 	issues := m.checkRes(spec)
 	if len(issues) > 0 {
@@ -181,9 +198,11 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 	}
 
 	report("saving final state")
-	info.State = api.StateRunning
-
+	// info is stored by pointer in m.sandboxes and read by concurrent
+	// List/Status/Create under m.mu, so its fields must only be mutated while
+	// holding the lock — mutating State outside it races with those readers.
 	m.mu.Lock()
+	info.State = api.StateRunning
 	if err := m.put(info); err != nil {
 		m.mu.Unlock()
 		return api.SandboxInfo{}, fmt.Errorf("save sandbox state: %w", err)

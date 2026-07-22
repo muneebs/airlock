@@ -47,6 +47,11 @@ type Manager struct {
 
 	mu        sync.Mutex
 	sandboxes map[string]*api.SandboxInfo
+	// creating holds the names of sandboxes whose Create is in flight right
+	// now, so a second concurrent Create for the same name is rejected as a
+	// duplicate instead of mistaking the in-progress "creating" store record
+	// for a crashed prior attempt and tearing it down. Guarded by mu.
+	creating map[string]bool
 }
 
 // NewManager creates a sandbox Manager with all required dependencies.
@@ -76,6 +81,7 @@ func NewManager(
 		storePath:   storePath,
 		checkRes:    CheckResourcesForSpec,
 		sandboxes:   make(map[string]*api.SandboxInfo),
+		creating:    make(map[string]bool),
 	}
 
 	if err := m.load(); err != nil {
