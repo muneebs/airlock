@@ -102,6 +102,9 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 	// airlock home" step chowns /home/airlock/projects so the already-mounted
 	// worktree is traversable by the airlock run-user.
 	if opts.Provision {
+		if m.provisioner == nil {
+			return api.SandboxInfo{}, fmt.Errorf("provision sandbox %q: no provisioner configured", spec.Name)
+		}
 		report("provisioning sandbox")
 		if err := m.provisioner.ProvisionVM(ctx, spec.Name, provisionOptionsForRuntime(runtimeType)); err != nil {
 			// The VM booted but is unusable without its baseline (no airlock
