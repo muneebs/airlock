@@ -16,15 +16,22 @@ import (
 )
 
 type fakeProvider struct {
-	vms            map[string]bool
-	execOut        string
-	execErr        error
-	startErr       error
-	stopErr        error
-	delErr         error
-	lastExecAsUser []string
-	createSpecs    []api.VMSpec
-	startCalls     int
+	vms         map[string]bool
+	execOut     string
+	execErr     error
+	startErr    error
+	stopErr     error
+	delErr      error
+	deleteCalls int
+	// lastDeleteCtxErr snapshots ctx.Err() at the instant Delete is called.
+	// Snapshotting is required because callers may cancel the context (via a
+	// deferred cancel) as soon as Delete returns, which would make a stored
+	// context reference read as canceled after the fact.
+	lastDeleteCtxErr error
+	lastExecAsUser   []string
+	execAsUserCalls  int
+	createSpecs      []api.VMSpec
+	startCalls       int
 	// startMountFailTimes makes the first N Start calls return a mount-like
 	// error, to exercise the mount-type fallback.
 	startMountFailTimes int
@@ -78,7 +85,9 @@ func (f *fakeProvider) Stop(_ context.Context, name string) error {
 	return nil
 }
 
-func (f *fakeProvider) Delete(_ context.Context, name string) error {
+func (f *fakeProvider) Delete(ctx context.Context, name string) error {
+	f.deleteCalls++
+	f.lastDeleteCtxErr = ctx.Err()
 	if f.delErr != nil {
 		return f.delErr
 	}
@@ -116,6 +125,7 @@ func (f *fakeProvider) Exec(_ context.Context, name string, cmd []string) (strin
 
 func (f *fakeProvider) ExecAsUser(_ context.Context, name, user string, cmd []string) (string, error) {
 	f.lastExecAsUser = cmd
+	f.execAsUserCalls++
 	return f.execOut, f.execErr
 }
 
@@ -134,6 +144,47 @@ func (f *fakeResetter) RestoreClean(_ context.Context, name string) error {
 
 func (f *fakeResetter) HasCleanSnapshot(_ context.Context, name string) (bool, error) {
 	return f.hasSnapshot, nil
+}
+
+// provisionCall records a single ProvisionVM invocation for assertions.
+type provisionCall struct {
+	name string
+	opts api.ProvisionOptions
+}
+
+// fakeProvisioner records ProvisionVM calls and, at call time, captures the
+// number of ExecAsUser (clone) and ApplyPolicy (network) calls made so far so
+// tests can assert provisioning is ordered before both. It satisfies
+// api.Provisioner.
+type fakeProvisioner struct {
+	provider *fakeProvider
+	network  *fakeNetworkController
+	err      error
+
+	calls                []provisionCall
+	execAsUserAtEachCall []int
+	policyAtEachCall     []int
+}
+
+func (f *fakeProvisioner) ProvisionVM(_ context.Context, name string, opts api.ProvisionOptions) error {
+	f.calls = append(f.calls, provisionCall{name: name, opts: opts})
+	if f.provider != nil {
+		f.execAsUserAtEachCall = append(f.execAsUserAtEachCall, f.provider.execAsUserCalls)
+	}
+	if f.network != nil {
+		f.policyAtEachCall = append(f.policyAtEachCall, len(f.network.policies))
+	}
+	return f.err
+}
+
+func (f *fakeProvisioner) ProvisionSteps(_ string, _ api.ProvisionOptions) []api.ProvisionStep {
+	return nil
+}
+
+func (f *fakeProvisioner) SnapshotClean(_ context.Context, _ string) error { return nil }
+
+func (f *fakeProvisioner) HasCleanSnapshot(_ context.Context, _ string) (bool, error) {
+	return false, nil
 }
 
 type fakeMountManager struct {
@@ -208,17 +259,42 @@ func newTestManager(t *testing.T) (*Manager, *fakeProvider, *fakeResetter, *fake
 
 	provider := newFakeProvider()
 	resetter := &fakeResetter{hasSnapshot: true}
+	provisioner := &fakeProvisioner{}
 	detector := detect.NewCompositeDetector()
 	profiles := profile.NewRegistry()
 	mounts := &fakeMountManager{}
 	network := &fakeNetworkController{}
 
-	mgr, err := NewManager(provider, resetter, detector, profiles, mounts, network, storePath)
+	mgr, err := NewManager(provider, resetter, provisioner, detector, profiles, mounts, network, storePath)
 	if err != nil {
 		t.Fatalf("NewManager() error: %v", err)
 	}
 	mgr.checkRes = func(_ api.SandboxSpec) []sysutil.Insufficiency { return nil }
 	return mgr, provider, resetter, mounts, network
+}
+
+// newProvisionTestManager builds a Manager wired with a fakeProvisioner that
+// records ProvisionVM calls (and their ordering relative to clone/network),
+// returning the provisioner so provisioning-path tests can inspect it.
+func newProvisionTestManager(t *testing.T) (*Manager, *fakeProvider, *fakeNetworkController, *fakeProvisioner) {
+	t.Helper()
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "sandbox_store.json")
+
+	provider := newFakeProvider()
+	resetter := &fakeResetter{hasSnapshot: true}
+	network := &fakeNetworkController{}
+	provisioner := &fakeProvisioner{provider: provider, network: network}
+	detector := detect.NewCompositeDetector()
+	profiles := profile.NewRegistry()
+	mounts := &fakeMountManager{}
+
+	mgr, err := NewManager(provider, resetter, provisioner, detector, profiles, mounts, network, storePath)
+	if err != nil {
+		t.Fatalf("NewManager() error: %v", err)
+	}
+	mgr.checkRes = func(_ api.SandboxSpec) []sysutil.Insufficiency { return nil }
+	return mgr, provider, network, provisioner
 }
 
 func intPtr(i int) *int {
@@ -810,7 +886,7 @@ func TestPersistence(t *testing.T) {
 	mounts := &fakeMountManager{}
 	network := &fakeNetworkController{}
 
-	mgr, err := NewManager(provider, resetter, detector, profiles, mounts, network, storePath)
+	mgr, err := NewManager(provider, resetter, &fakeProvisioner{}, detector, profiles, mounts, network, storePath)
 	if err != nil {
 		t.Fatalf("NewManager() error: %v", err)
 	}
@@ -826,7 +902,7 @@ func TestPersistence(t *testing.T) {
 		t.Fatalf("Create() error: %v", err)
 	}
 
-	mgr2, err := NewManager(provider, resetter, detector, profiles, mounts, network, storePath)
+	mgr2, err := NewManager(provider, resetter, &fakeProvisioner{}, detector, profiles, mounts, network, storePath)
 	if err != nil {
 		t.Fatalf("NewManager() for reload: %v", err)
 	}
@@ -1053,7 +1129,7 @@ func TestManagerLoadEmptyStore(t *testing.T) {
 	mounts := &fakeMountManager{}
 	network := &fakeNetworkController{}
 
-	mgr, err := NewManager(provider, resetter, detector, profiles, mounts, network, storePath)
+	mgr, err := NewManager(provider, resetter, &fakeProvisioner{}, detector, profiles, mounts, network, storePath)
 	if err != nil {
 		t.Fatalf("NewManager() with empty store: %v", err)
 	}
@@ -1082,7 +1158,7 @@ func TestManagerLoadCorruptStore(t *testing.T) {
 	mounts := &fakeMountManager{}
 	network := &fakeNetworkController{}
 
-	_, err := NewManager(provider, resetter, detector, profiles, mounts, network, storePath)
+	_, err := NewManager(provider, resetter, &fakeProvisioner{}, detector, profiles, mounts, network, storePath)
 	if err == nil {
 		t.Error("expected error loading corrupt store")
 	}

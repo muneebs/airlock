@@ -6,10 +6,36 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/muneebs/airlock/internal/api"
 	"github.com/muneebs/airlock/internal/detect"
 )
+
+// rollbackTimeout bounds the cleanup Delete run when create fails partway. It is
+// generous because tearing down a Lima VM can be slow, but finite so a wedged
+// provider can't block create's return indefinitely.
+const rollbackTimeout = 2 * time.Minute
+
+// rollbackVM tears a half-created VM down, marks its store record errored, and
+// returns opErr. The Delete runs on a context detached from ctx's cancellation
+// (values retained) and bounded by rollbackTimeout: provision/clone/network
+// failures are frequently caused by ctx itself being canceled or timed out, and
+// reusing that same ctx for cleanup would abort the Delete and leak a running
+// VM. If the cleanup Delete fails, its error is joined onto opErr so the leaked
+// VM surfaces to the caller instead of being only logged.
+func (m *Manager) rollbackVM(ctx context.Context, info *api.SandboxInfo, opErr error) (api.SandboxInfo, error) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+	defer cancel()
+	if delErr := m.provider.Delete(cleanupCtx, info.Name); delErr != nil {
+		opErr = errors.Join(opErr, fmt.Errorf("rollback delete VM %q: %w", info.Name, delErr))
+	}
+	m.mu.Lock()
+	info.State = api.StateErrored
+	_ = m.put(info)
+	m.mu.Unlock()
+	return api.SandboxInfo{}, opErr
+}
 
 // Create orchestrates the full sandbox creation workflow:
 // validate → check resources → detect runtime → resolve profile → create VM →
@@ -94,6 +120,26 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 		return api.SandboxInfo{}, err
 	}
 
+	// Provision the freshly booted VM with the shared baseline+runtime steps
+	// (same machinery setup uses). This must run BEFORE cloneRemoteSource — the
+	// clone runs as the airlock user, which the baseline steps create — and
+	// BEFORE applyNetworkPolicy, because a Node install needs open egress and a
+	// locking profile would otherwise cut it off. The baseline "Preparing
+	// airlock home" step chowns /home/airlock/projects so the already-mounted
+	// worktree is traversable by the airlock run-user.
+	if opts.Provision {
+		if m.provisioner == nil {
+			return api.SandboxInfo{}, fmt.Errorf("provision sandbox %q: no provisioner configured", spec.Name)
+		}
+		report("provisioning sandbox")
+		if err := m.provisioner.ProvisionVM(ctx, spec.Name, provisionOptionsForRuntime(runtimeType)); err != nil {
+			// The VM booted but is unusable without its baseline (no airlock
+			// user, no runtime). Tear it down and mark the record errored, as
+			// the neighboring clone/network steps do on failure.
+			return m.rollbackVM(ctx, info, fmt.Errorf("provision sandbox: %w", err))
+		}
+	}
+
 	// Remote sources are git-cloned into the VM. This must happen after the VM
 	// boots but BEFORE the network policy is applied: a locking profile
 	// (cautious/strict/agent) would otherwise block git from reaching the
@@ -101,14 +147,7 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 	if isRemoteSource(spec.Source) {
 		report("cloning source")
 		if err := m.cloneRemoteSource(ctx, spec.Name, spec.Source); err != nil {
-			if delErr := m.provider.Delete(ctx, spec.Name); delErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: rollback delete VM %q: %v\n", spec.Name, delErr)
-			}
-			m.mu.Lock()
-			info.State = api.StateErrored
-			_ = m.put(info)
-			m.mu.Unlock()
-			return api.SandboxInfo{}, fmt.Errorf("clone source: %w", err)
+			return m.rollbackVM(ctx, info, fmt.Errorf("clone source: %w", err))
 		}
 	}
 
@@ -119,14 +158,7 @@ func (m *Manager) CreateWithOptions(ctx context.Context, spec api.SandboxSpec, o
 			// source, already holds the cloned code). Leaving it running without
 			// the requested restrictions is worse than not creating it, so tear
 			// it down rather than just marking the record errored.
-			if delErr := m.provider.Delete(ctx, spec.Name); delErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: rollback delete VM %q: %v\n", spec.Name, delErr)
-			}
-			m.mu.Lock()
-			info.State = api.StateErrored
-			_ = m.put(info)
-			m.mu.Unlock()
-			return api.SandboxInfo{}, fmt.Errorf("apply network policy: %w", err)
+			return m.rollbackVM(ctx, info, fmt.Errorf("apply network policy: %w", err))
 		}
 	}
 
@@ -259,6 +291,20 @@ func (m *Manager) createAndStartVM(ctx context.Context, name string, vmSpec api.
 		return nil
 	}
 	return fmt.Errorf("start VM: %w", lastErr)
+}
+
+// provisionOptionsForRuntime maps a resolved runtime to the provisioning
+// options for a per-ticket sandbox. Every runtime gets the baseline (system
+// packages, airlock user, passwordless sudo, /home/airlock) via the empty
+// options; node additionally requests Node.js/npm/pnpm. NodeVersion is left
+// zero so ProvisionSteps applies its default (currently 22). Bun/Docker/AI
+// tools are intentionally out of scope for per-ticket sandboxes.
+func provisionOptionsForRuntime(rt api.RuntimeType) api.ProvisionOptions {
+	opts := api.ProvisionOptions{}
+	if rt == api.RuntimeNode {
+		opts.InstallNode = true
+	}
+	return opts
 }
 
 func (m *Manager) resolveRuntime(spec api.SandboxSpec) (api.RuntimeType, error) {

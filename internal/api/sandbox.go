@@ -48,6 +48,14 @@ type CreateOptions struct {
 	// iptables-restore on a freshly booted Ubuntu image that may not yet
 	// have the iptables backend initialized.
 	SkipNetworkPolicy bool
+	// Provision runs the shared baseline provisioning (system packages,
+	// airlock user, passwordless sudo, /home/airlock) plus runtime-specific
+	// steps inside Create, after the VM boots but before the remote source is
+	// cloned and before network policy is applied. It is off by default so the
+	// setup/init paths — which provision in the CLI layer with per-step TUI —
+	// are unaffected. The per-ticket `sandbox` command sets it so its VM is
+	// provisioned identically to the base VM (same ProvisionSteps builder).
+	Provision bool
 }
 
 // SandboxManager creates, inspects, and destroys isolated sandbox environments.

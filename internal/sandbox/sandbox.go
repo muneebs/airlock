@@ -35,23 +35,30 @@ type ResourceChecker func(spec api.SandboxSpec) []sysutil.Insufficiency
 // Manager orchestrates sandbox creation, execution, and teardown by delegating
 // to injectable dependencies. It implements api.SandboxManager.
 type Manager struct {
-	provider  api.Provider
-	resetter  Resetter
-	detector  *detect.CompositeDetector
-	profiles  api.ProfileRegistry
-	mounts    api.MountManager
-	network   api.NetworkController
-	storePath string
-	checkRes  ResourceChecker
+	provider    api.Provider
+	resetter    Resetter
+	provisioner api.Provisioner
+	detector    *detect.CompositeDetector
+	profiles    api.ProfileRegistry
+	mounts      api.MountManager
+	network     api.NetworkController
+	storePath   string
+	checkRes    ResourceChecker
 
 	mu        sync.Mutex
 	sandboxes map[string]*api.SandboxInfo
 }
 
 // NewManager creates a sandbox Manager with all required dependencies.
+//
+// provisioner runs the shared baseline+runtime provisioning steps when a
+// sandbox is created with CreateOptions.Provision. It is the same machinery
+// setup uses (Provisioner.ProvisionVM), so per-ticket and base VMs are
+// provisioned by one implementation.
 func NewManager(
 	provider api.Provider,
 	resetter Resetter,
+	provisioner api.Provisioner,
 	detector *detect.CompositeDetector,
 	profiles api.ProfileRegistry,
 	mounts api.MountManager,
@@ -59,15 +66,16 @@ func NewManager(
 	storePath string,
 ) (*Manager, error) {
 	m := &Manager{
-		provider:  provider,
-		resetter:  resetter,
-		detector:  detector,
-		profiles:  profiles,
-		mounts:    mounts,
-		network:   network,
-		storePath: storePath,
-		checkRes:  CheckResourcesForSpec,
-		sandboxes: make(map[string]*api.SandboxInfo),
+		provider:    provider,
+		resetter:    resetter,
+		provisioner: provisioner,
+		detector:    detector,
+		profiles:    profiles,
+		mounts:      mounts,
+		network:     network,
+		storePath:   storePath,
+		checkRes:    CheckResourcesForSpec,
+		sandboxes:   make(map[string]*api.SandboxInfo),
 	}
 
 	if err := m.load(); err != nil {

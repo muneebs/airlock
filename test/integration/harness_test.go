@@ -127,6 +127,7 @@ exit 0
 	mgr, err := sandbox.NewManager(
 		provider,
 		provider,
+		provider,
 		detector,
 		profiles,
 		mountStore,
