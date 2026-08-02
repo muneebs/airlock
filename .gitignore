@@ -39,6 +39,9 @@ Thumbs.db
 # Local task tracker
 TASKS.md
 
+# Local workflow harness state (drydock ticket artifacts)
+.drydock/
+
 # Wizard-generated project config (not repo config)
 airlock.toml
 
