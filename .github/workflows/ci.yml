@@ -69,7 +69,7 @@ jobs:
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
+          args: release --clean --release-header=.github/release-header.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -82,3 +82,12 @@ jobs:
           subject-path: |
             dist/*.tar.gz
             dist/checksums.txt
+
+      # Publishing is what freezes an immutable release, so it happens last —
+      # after every asset is attached and attested. Nothing can be added after
+      # this step.
+      - name: Publish release
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}

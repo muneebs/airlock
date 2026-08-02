@@ -68,8 +68,11 @@ release:
   github:
     owner: muneebs
     name: airlock
-  header: |-
-    **Installation:** `curl -fsSL https://raw.githubusercontent.com/muneebs/airlock/main/install.sh | bash`
+  # Releases are immutable: assets can only be attached while the release is a
+  # draft, so goreleaser must not publish. The workflow flips the draft once
+  # every asset is uploaded and attested.
+  draft: true
+  # header comes from .github/release-header.md via --release-header.
   footer: |-
     ## Verifying this release
 

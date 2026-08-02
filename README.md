@@ -30,7 +30,7 @@ Installs to `$GOPATH/bin/airlock` — ensure that directory is on your `PATH`. T
 gh attestation verify airlock_0.3.0_darwin_arm64.tar.gz --repo muneebs/airlock
 ```
 
-Attestations start at v0.3.0; earlier releases are unsigned.
+Releases are also immutable — once published, the tag can't be moved and assets can't be added, changed, or deleted. Attestations and immutability start at v0.3.0; earlier releases have neither.
 
 ## Quick start
 
