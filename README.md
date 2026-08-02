@@ -24,6 +24,14 @@ Installs to `$GOPATH/bin/airlock` — ensure that directory is on your `PATH`. T
 
 **Prerequisites:** macOS (Apple Silicon or Intel) with [Lima](https://github.com/lima-vm/lima) installed.
 
+**Verifying a download:** release archives carry a build provenance attestation, so you can confirm an archive was built by this repo's release workflow and not swapped out in transit:
+
+```bash
+gh attestation verify airlock_0.3.0_darwin_arm64.tar.gz --repo muneebs/airlock
+```
+
+Attestations start at v0.3.0; earlier releases are unsigned.
+
 ## Quick start
 
 ```bash

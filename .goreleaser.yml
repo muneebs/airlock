@@ -35,11 +35,12 @@ checksum:
   name_template: checksums.txt
 
 snapshot:
-  name_template: "{{ .Tag }}-next"
+  version_template: "{{ .Version }}-next"
 
 changelog:
   sort: asc
   use: github
+  abbrev: 7
   filters:
     exclude:
       - "^chore:"
@@ -69,3 +70,19 @@ release:
     name: airlock
   header: |-
     **Installation:** `curl -fsSL https://raw.githubusercontent.com/muneebs/airlock/main/install.sh | bash`
+  footer: |-
+    ## Verifying this release
+
+    Every archive is signed with a build provenance attestation tied to the
+    workflow run that produced it:
+
+    ```sh
+    gh attestation verify airlock_{{ .Version }}_darwin_arm64.tar.gz --repo muneebs/airlock
+    ```
+
+    `checksums.txt` is attested too, so verifying it covers every archive.
+
+    ## AI transparency
+
+    Releases in this project are AI-assisted. All code in this release was
+    reviewed and tested by a human before merge.
