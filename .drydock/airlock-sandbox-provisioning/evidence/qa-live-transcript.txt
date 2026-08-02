@@ -1,0 +1,42 @@
+### QA LIVE EVIDENCE — sandbox drydock-qa-verify-stage4 (branch fix/airlock-sandbox-provisioning, binary /tmp/airlock-fix)
+### date: Wed Jul 22 07:34:12 SAST 2026
+
+## AC1 airlock user exists
+$ airlock run drydock-qa-verify-stage4 -- id airlock
+uid=1000(airlock) gid=1001(airlock) groups=1001(airlock)
+## AC2 run as real user (no 'unknown user airlock')
+$ airlock run drydock-qa-verify-stage4 -- whoami
+airlock$ airlock run drydock-qa-verify-stage4 -- true; echo exit=$?
+exit=0
+
+## AC3 node/npm on PATH for run-user
+$ airlock run drydock-qa-verify-stage4 -- node --version
+v22.23.1$ airlock run drydock-qa-verify-stage4 -- npm --version
+10.9.8
+## AC4 #EXPORT_CRITICAL mount read+write roundtrip (U1)
+$ airlock run drydock-qa-verify-stage4 -- ls -la /home/airlock/projects/drydock-qa-verify-stage4   (first lines)
+total 92
+drwxr-xr-x 25 airlock airlock   800 Jul 22 07:32 .
+drwxr-xr-x  3 airlock airlock    96 Jul 22 07:22 .drydock
+-rw-r--r--  1 airlock airlock    68 Jul 22 07:22 .git
+drwxr-xr-x  3 airlock airlock    96 Jul 22 07:22 .github
+-rw-r--r--  1 airlock airlock   410 Jul 22 07:22 .gitignore
+$ airlock run drydock-qa-verify-stage4 -- cat /home/airlock/projects/drydock-qa-verify-stage4/host-written.txt   (host->guest)
+HOST_TO_GUEST_STAGE4_OK$ airlock run drydock-qa-verify-stage4 -- cp /home/airlock/projects/drydock-qa-verify-stage4/host-written.txt /home/airlock/projects/drydock-qa-verify-stage4/guest-copy.txt   (guest write)
+cp exit=0
+$ airlock run drydock-qa-verify-stage4 -- cat /home/airlock/projects/drydock-qa-verify-stage4/guest-copy.txt   (guest readback)
+HOST_TO_GUEST_STAGE4_OK$ host: cat qa-worktree/guest-copy.txt   (guest->host, real bytes)
+HOST_TO_GUEST_STAGE4_OK
+
+## AC5 in-sandbox verification against mount
+$ airlock run drydock-qa-verify-stage4 -- node --check /home/airlock/projects/drydock-qa-verify-stage4/hello.js; echo exit=$?
+exit=0
+$ airlock run drydock-qa-verify-stage4 -- node /home/airlock/projects/drydock-qa-verify-stage4/hello.js
+airlock-qa ok
+## AC7 dev profile: mount read-write + egress open
+$ airlock run drydock-qa-verify-stage4 -- curl -sS -o /dev/null -w http_code=%{http_code} https://registry.npmjs.org/
+http_code=200
+Mounts
+  • /private/tmp/claude-501/-Users-muneebsamuels-dev-sandbox/f3dd30af-8bfa-46d1-a28b-a9f56b505208/scratchpad/qa-worktree → /home/airlock/projects/drydock-qa-verify-stage4 (read-write)
+
+Network
